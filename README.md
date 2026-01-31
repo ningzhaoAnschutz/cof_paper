@@ -29,18 +29,31 @@ This project uses:
 ## Project Structure
 
 ```
-cotranslational_folding/
+cof_paper/
 ├── notebooks/                    # Analysis notebooks
-│   ├── FRAP_analyses/            # FRAP analysis notebooks
+│   ├── CoF_project/              # Cotranslational folding analysis & figure generation
+│   │   ├── *_CoF_notebook.ipynb  # Per-construct analysis notebooks
+│   │   ├── notebook_comparing_datasets.ipynb
+│   │   ├── notebook_folding_efficiency.ipynb
+│   │   └── load_data.py          # Shared data loading utilities
+│   ├── FRAP_analyses/            # FRAP processing and visualization
+│   │   ├── FRAP_processing_RS.ipynb
+│   │   ├── FRAP_representative_images_RS.ipynb
+│   │   └── frap_plotting_module.py
 │   ├── Harringtonine/            # Harringtonine chase experiments
-│   ├── CoF_project/              # Cotranslational folding analysis
-│   ├── codon_optimization/       # Codon optimization studies
-│   └── processing_long_movies/   # Long timecourse processing
+│   ├── autocorrelations/         # Time-course correlation analysis
+│   │   ├── processing_time_courses.ipynb
+│   │   └── cross_correlation_cof.ipynb
+│   └── codon_optimization/       # CAI analysis and codon studies
 ├── modeling/                     # Simulation and modeling
-│   ├── TASEP/                    # TASEP simulation notebooks
+│   ├── mechanistic_model/        # Kinetic models (One-Pool, Two-Pool)
+│   │   ├── modeling/             # Model fitting scripts
+│   │   └── writing/              # LaTeX documentation
+│   ├── TASEP/                    # TASEP ribosome translation simulations
 │   └── cellpose_models/          # Custom Cellpose segmentation models
 ├── data/                         # Data files (not tracked in git)
 │   └── gene_sequences/           # Gene sequence files (.dna)
+├── docs/                         # Documentation
 ├── requirements.txt              # Python dependencies
 └── README.md                     # This file
 ```
