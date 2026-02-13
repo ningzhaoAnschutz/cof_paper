@@ -839,7 +839,7 @@ def compute_autocorrelation_for_dataset(
                 line_color=line_color,
                 line_color_fit=line_color_fit,
                 plot_name=plot_name,
-
+                figsize=figsize,
             ).run()
         
         # Create results DataFrame
@@ -1475,6 +1475,9 @@ def analyze_crosscorr(
     min_max_normalize=True,  # New parameter for min-max normalization
     axis_lims =None,  # New parameter for axis limits
     figsize=(8, 4.2),
+    results_folder=None,
+    save_plot=False,
+    dataset_name='crosscorr_analysis',
 ):
     """
     Analyze a cross-correlation curve to extract delay/shape metrics.
@@ -1506,6 +1509,12 @@ def analyze_crosscorr(
         Standard deviation for Gaussian smoothing of correlation.
     min_max_normalize : bool, default True
         If True, normalize corr to [0, 1] range based on window_s range.
+    results_folder : Path, optional
+        Folder to save plots (if save_plot=True)
+    save_plot : bool
+        Whether to save the plot to results_folder
+    dataset_name : str
+        Name prefix for saved files
     """
     corr = np.asarray(corr).astype(float).squeeze()
     if corr.ndim != 1:
@@ -1677,6 +1686,14 @@ def analyze_crosscorr(
         ax.grid(True, alpha=0.2)
         if ax is None:
             plt.tight_layout()
+            # Save plot if requested
+            if save_plot and results_folder is not None:
+                results_folder = Path(results_folder)
+                results_folder.mkdir(parents=True, exist_ok=True)
+                base_name = f'{dataset_name}_crosscorr'
+                plt.savefig(results_folder / f'{base_name}.png', dpi=150, bbox_inches='tight')
+                plt.savefig(results_folder / f'{base_name}.svg', bbox_inches='tight')
+                print(f"Saved cross-correlation plot to: {results_folder / base_name}.[png|svg]")
             plt.show()
     return metrics, corr_interp, lags_s
 
@@ -2122,6 +2139,9 @@ def plot_aligned_with_shared_normalization(
     normalization_mode='shared',  # NEW: 'shared', 'independent', or 'none'
     show_delay=True,
     trajectory_colors=None,
+    results_folder=None,
+    save_plot=False,
+    dataset_name='minima_alignment',
 ):
     """
     Plot aligned minima with flexible normalization modes.
@@ -2147,6 +2167,12 @@ def plot_aligned_with_shared_normalization(
         - 'shared': Use combined min/max from both signals (preserves delays)
         - 'independent': Normalize each signal separately [0, 1] (exaggerates differences)
         - 'none': No normalization (raw units)
+    results_folder : Path, optional
+        Folder to save plots (if save_plot=True)
+    save_plot : bool
+        Whether to save the plot to results_folder
+    dataset_name : str
+        Name prefix for saved files
     
     Returns
     -------
@@ -2326,6 +2352,16 @@ def plot_aligned_with_shared_normalization(
     ax.spines['right'].set_visible(False)
     
     plt.tight_layout()
+    
+    # Save plot if requested
+    if save_plot and results_folder is not None:
+        results_folder = Path(results_folder)
+        results_folder.mkdir(parents=True, exist_ok=True)
+        base_name = f'{dataset_name}_{normalization_mode}_normalization'
+        plt.savefig(results_folder / f'{base_name}.png', dpi=150, bbox_inches='tight')
+        plt.savefig(results_folder / f'{base_name}.svg', bbox_inches='tight')
+        print(f"Saved minima alignment plot to: {results_folder / base_name}.[png|svg]")
+    
     plt.show()
     
     # Print summary
@@ -2764,1424 +2800,129 @@ def analyze_dual_channel_time_courses(
     }
 
 
-
-# def plot_dual_channel_kymograph(
-#     dataset='cof',
-#     data_folder=None,
-#     results_folder=None,
-#     selected_field='spot_int_ch_',
-#     primary_channel=1,
-#     secondary_channel=0,
-#     min_percentage_data_in_trajectory=0.2,
-#     max_missing_frames=3,
-#     min_snr=1,
-#     smooth_window=1,
-#     selected_indices=None,
-#     orientation="rows=trajectories",
-#     normalize="per_trace_percentile",
-#     p_lo=1,
-#     p_hi=99,
-#     gamma=None,
-#     sort_by_data_density=True,
-#     nan_color=(0.0, 0.0, 0.0),
-#     title=None,
-#     figsize=(12, 6),
-#     dpi=150,
-#     save_path=None,
-#     show=True,
-#     verbose=True,
-#     simulation_mode=False,
-#     SSA_data_1=None,
-#     SSA_data_2=None,
-#     shift_data=False,  # NEW PARAMETER
-# ):
-#     """
-#     Create a dual-channel kymograph for cotranslational folding analysis.
+def plot_dual_signal_trajectories(
+    primary_data,
+    secondary_data,
+    time_array,
+    trajectory_index=0,
+    colors=None,
+    labels=None,
+    smooth_window=1,
+    figsize=(10, 2),
+    normalize=False,
+    verbose=True,
+    results_folder=None,
+    save_plot=False,
+    dataset_name='trajectories',
+):
+    """
+    Plot individual dual-channel trajectories.
     
-#     Compatible with both simulated and experimental data, handles missing timepoints,
-#     and uses default ImageJ-style colors from imports.py.
+    Parameters
+    ----------
+    primary_data : ndarray
+        Primary channel data (n_trajectories, n_timepoints)
+    secondary_data : ndarray
+        Secondary channel data (n_trajectories, n_timepoints)
+    time_array : ndarray
+        Time axis in seconds
+    trajectory_index : int
+        Index of trajectory to plot
+    colors : list of 2 colors, optional
+        Colors for [primary, secondary] channels
+    labels : list of 2 strings, optional
+        Labels for [primary, secondary] channels
+    smooth_window : int
+        Smoothing window size (1 = no smoothing)
+    figsize : tuple
+        Figure size (width, height)
+    normalize : bool
+        Whether to normalize each channel to [0, 1]
+    verbose : bool
+        Print progress messages
+    results_folder : Path, optional
+        Folder to save plots (if save_plot=True)
+    save_plot : bool
+        Whether to save the plot to results_folder
+    dataset_name : str
+        Name prefix for saved files
     
-#     Parameters
-#     ----------
-#     dataset : str
-#         Dataset name
-#     data_folder : Path
-#         Folder containing experimental data
-#     results_folder : Path
-#         Folder to save results
-#     selected_field : str
-#         Base field name (e.g., 'spot_int_ch_')
-#     primary_channel : int
-#         Primary channel index (0 or 1)
-#     secondary_channel : int
-#         Secondary channel index (0 or 1)
-#     min_percentage_data_in_trajectory : float
-#         Minimum percentage of valid data required
-#     max_missing_frames : int
-#         Maximum consecutive NaN frames allowed
-#     min_snr : float
-#         Minimum SNR threshold
-#     smooth_window : int
-#         Smoothing window size
-#     selected_indices : array-like, optional
-#         Indices or boolean mask to subset trajectories
-#     orientation : str
-#         'rows=trajectories' or 'rows=time'
-#     normalize : str or list
-#         Normalization mode for each channel
-#     p_lo, p_hi : float
-#         Percentiles for normalization
-#     gamma : float, optional
-#         Gamma correction factor
-#     sort_by_data_density : bool
-#         If True, sort rows by number of valid timepoints (most data at top)
-#     nan_color : tuple
-#         RGB color for missing data (default black)
-#     title : str, optional
-#         Plot title
-#     figsize : tuple
-#         Figure size (width, height)
-#     dpi : int
-#         Figure resolution
-#     save_path : Path, optional
-#         Path to save figure
-#     show : bool
-#         Whether to display the plot
-#     verbose : bool
-#         Print progress messages
-#     simulation_mode : bool
-#         Use simulated data instead of loading from files
-#     SSA_data_1 : ndarray, optional
-#         Simulated primary channel data
-#     SSA_data_2 : ndarray, optional
-#         Simulated secondary channel data
-#     shift_data : bool, optional
-#         If True, shift trajectories to align first valid data point to the left.
-#         This removes leading NaNs and aligns all trajectories at their start.
-#         Default: False (preserve original temporal alignment)
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The figure object
+    ax : matplotlib.axes.Axes
+        The axes object
+    """
+    # Default colors and labels
+    if colors is None:
+        colors = ['forestgreen', 'indigo']
+    if labels is None:
+        labels = ['Primary (ch_1)', 'Secondary (ch_0)']
     
-#     Returns
-#     -------
-#     img : ndarray
-#         RGB kymograph image (H, W, 3)
-#     primary_data : ndarray
-#         Primary channel data used (after shifting if shift_data=True)
-#     secondary_data : ndarray
-#         Secondary channel data used (after shifting if shift_data=True)
-#     """
-#     # Import default colors from imports.py
-#     from imports import color_green, color_magenta
+    # Validate trajectory index
+    n_trajectories = primary_data.shape[0]
+    if trajectory_index >= n_trajectories:
+        raise ValueError(f"trajectory_index {trajectory_index} >= n_trajectories {n_trajectories}")
     
-#     # Default colors (primary=green, secondary=magenta)
-#     primary_color = color_green
-#     secondary_color = color_magenta
+    # Extract single trajectory
+    primary_trace = primary_data[trajectory_index, :].copy()
+    secondary_trace = secondary_data[trajectory_index, :].copy()
     
-#     if verbose:
-#         print("=" * 70)
-#         print("DUAL-CHANNEL KYMOGRAPH GENERATION")
-#         print("=" * 70)
-#         print(f"Dataset: {dataset}")
-#         print(f"Mode: {'SIMULATION' if simulation_mode else 'EXPERIMENTAL'}")
-#         print(f"Primary channel: {primary_channel} (color: green)")
-#         print(f"Secondary channel: {secondary_channel} (color: magenta)")
-#         print(f"Shift data: {'YES' if shift_data else 'NO'}")
-    
-#     # ===== DATA LOADING =====
-#     if simulation_mode:
-#         # Use simulated data
-#         if SSA_data_1 is None or SSA_data_2 is None:
-#             raise ValueError("simulation_mode=True requires SSA_data_1 and SSA_data_2")
+    # Apply smoothing if requested
+    if smooth_window > 1:
+        from scipy.ndimage import uniform_filter1d
+        # Forward-fill NaNs before smoothing
+        primary_finite = np.where(np.isfinite(primary_trace))[0]
+        secondary_finite = np.where(np.isfinite(secondary_trace))[0]
         
-#         primary_data = SSA_data_1.copy()
-#         secondary_data = SSA_data_2.copy()
+        if len(primary_finite) > 0:
+            primary_trace = np.interp(np.arange(len(primary_trace)), primary_finite, primary_trace[primary_finite])
+            primary_trace = uniform_filter1d(primary_trace, size=smooth_window, mode='nearest')
         
-#         if verbose:
-#             print(f"\nLoaded simulated data:")
-#             print(f"  Primary shape: {primary_data.shape}")
-#             print(f"  Secondary shape: {secondary_data.shape}")
+        if len(secondary_finite) > 0:
+            secondary_trace = np.interp(np.arange(len(secondary_trace)), secondary_finite, secondary_trace[secondary_finite])
+            secondary_trace = uniform_filter1d(secondary_trace, size=smooth_window, mode='nearest')
     
-#     else:
-#         # Load experimental data
-#         if data_folder is None:
-#             raise ValueError("data_folder required when simulation_mode=False")
+    # Normalize if requested
+    if normalize:
+        p_min, p_max = np.nanmin(primary_trace), np.nanmax(primary_trace)
+        s_min, s_max = np.nanmin(secondary_trace), np.nanmax(secondary_trace)
         
-#         folder_with_files, _, dataframe_prefix = dataset_selection(
-#             dataset, data_folder, control_spots_mode=False, downsample=False
-#         )
-        
-#         if verbose:
-#             print(f"\nLoading experimental data from: {folder_with_files}")
-        
-#         try:
-#             primary_data, secondary_data, n_cells = load_dual_channel_tracking_data(
-#                 folder_with_files,
-#                 base_field=selected_field,
-#                 primary_channel=primary_channel,
-#                 secondary_channel=secondary_channel,
-#                 min_percentage_data_in_trajectory=min_percentage_data_in_trajectory,
-#                 dataframe_prefix=dataframe_prefix,
-#                 min_snr=min_snr,
-#                 max_missing_frames=max_missing_frames,
-#                 smooth_window=smooth_window,
-#                 verbose=verbose
-#             )
-#         except Exception as e:
-#             raise RuntimeError(f"Failed to load dual-channel data: {e}")
-        
-#         if verbose:
-#             print(f"\nLoaded experimental data:")
-#             print(f"  Number of cells: {n_cells}")
-#             print(f"  Primary shape: {primary_data.shape}")
-#             print(f"  Secondary shape: {secondary_data.shape}")
-    
-#     # ===== VALIDATION =====
-#     if primary_data.shape != secondary_data.shape:
-#         raise ValueError(
-#             f"Primary and secondary data must have same shape, "
-#             f"got {primary_data.shape} vs {secondary_data.shape}"
-#         )
-    
-#     n_traces, n_time = primary_data.shape
-    
-#     if n_traces == 0:
-#         raise ValueError("No trajectories loaded")
-    
-#     if verbose:
-#         print(f"\nData summary:")
-#         print(f"  Total trajectories: {n_traces}")
-#         print(f"  Timepoints per trajectory: {n_time}")
-    
-#     # ===== SHIFT DATA (NEW SECTION) =====
-#     if shift_data:
-#         if verbose:
-#             print("\nShifting trajectories to align first valid datapoint...")
-        
-#         # Use mi.Utilities().shift_trajectories for dual-channel shifting
-#         try:
-#             primary_shifted, secondary_shifted = mi.Utilities().shift_trajectories(
-#                 array_ch0=primary_data,
-#                 array_ch1=secondary_data,
-#                 min_percentage_data_in_trajectory=min_percentage_data_in_trajectory,
-#                 max_missing_frames=max_missing_frames
-#             )
-            
-#             # Update data arrays
-#             primary_data = primary_shifted
-#             secondary_data = secondary_shifted
-            
-#             if verbose:
-#                 print(f"  Trajectories after shifting: {primary_data.shape[0]}")
-#                 if primary_data.shape[0] < n_traces:
-#                     print(f"  Removed {n_traces - primary_data.shape[0]} trajectories during shifting")
-                
-#                 # Update n_traces for subsequent processing
-#                 n_traces = primary_data.shape[0]
-                
-#         except Exception as e:
-#             if verbose:
-#                 print(f"  WARNING: Shifting failed ({e}), continuing without shift")
-    
-#     # ===== SORT BY DATA DENSITY =====
-#     if sort_by_data_density:
-#         # Count valid (non-NaN) points per trajectory
-#         valid_counts_primary = np.sum(np.isfinite(primary_data), axis=1)
-#         valid_counts_secondary = np.sum(np.isfinite(secondary_data), axis=1)
-#         valid_counts_total = valid_counts_primary + valid_counts_secondary
-        
-#         # Sort descending (most data at top)
-#         sort_indices = np.argsort(-valid_counts_total)
-#         primary_data = primary_data[sort_indices, :]
-#         secondary_data = secondary_data[sort_indices, :]
-        
-#         if verbose:
-#             print(f"\nSorted trajectories by data density:")
-#             print(f"  Top trajectory has {int(valid_counts_total[sort_indices[0]])} valid points")
-#             print(f"  Bottom trajectory has {int(valid_counts_total[sort_indices[-1]])} valid points")
-    
-#     # ===== SUBSET SELECTION =====
-#     if selected_indices is not None:
-#         selected_indices = np.asarray(selected_indices)
-#         if selected_indices.dtype == bool:
-#             primary_data = primary_data[selected_indices, :]
-#             secondary_data = secondary_data[selected_indices, :]
-#         else:
-#             primary_data = primary_data[selected_indices]
-#             secondary_data = secondary_data[selected_indices]
-        
-#         if verbose:
-#             print(f"\nApplied trajectory selection:")
-#             print(f"  Selected {primary_data.shape[0]} trajectories")
-    
-#     # ===== NORMALIZATION WITH NAN HANDLING =====
-#     def _normalize_with_nans(X, mode="per_trace_percentile", p_lo=1, p_hi=99, eps=1e-9):
-#         """
-#         Normalize array handling NaNs properly.
-#         NaN pixels will remain NaN and will be colored with nan_color.
-#         """
-#         X = np.asarray(X, dtype=float)
-#         X_norm = np.full_like(X, np.nan)
-        
-#         for i in range(X.shape[0]):
-#             row = X[i, :]
-#             finite_mask = np.isfinite(row)
-            
-#             if not np.any(finite_mask):
-#                 # All NaN row - leave as NaN
-#                 continue
-            
-#             finite_vals = row[finite_mask]
-            
-#             if mode == "per_trace_percentile":
-#                 lo = np.percentile(finite_vals, p_lo)
-#                 hi = np.percentile(finite_vals, p_hi)
-#                 scale = max(hi - lo, eps)
-#                 row_norm = (row - lo) / scale
-#             elif mode == "per_trace_max":
-#                 m = np.max(finite_vals)
-#                 m = max(m, eps)
-#                 row_norm = row / m
-#             elif mode == "global_percentile":
-#                 # Use global percentiles (computed once outside loop for efficiency)
-#                 all_finite = X[np.isfinite(X)]
-#                 if all_finite.size > 0:
-#                     lo = np.percentile(all_finite, p_lo)
-#                     hi = np.percentile(all_finite, p_hi)
-#                     scale = max(hi - lo, eps)
-#                     row_norm = (row - lo) / scale
-#                 else:
-#                     row_norm = row
-#             elif mode == "zscore":
-#                 mu = np.mean(finite_vals)
-#                 sd = np.std(finite_vals) + eps
-#                 Z = (row - mu) / sd
-#                 row_norm = (Z + 2) / 4.0
-#             else:
-#                 raise ValueError(f"Unknown normalization mode: {mode}")
-            
-#             X_norm[i, :] = np.clip(row_norm, 0.0, 1.0)
-        
-#         return X_norm
-    
-#     # Normalize both channels
-#     if isinstance(normalize, str):
-#         normalize_modes = [normalize, normalize]
-#     else:
-#         normalize_modes = list(normalize)
-    
-#     if verbose:
-#         print(f"\nNormalizing data:")
-#         print(f"  Primary mode: {normalize_modes[0]}")
-#         print(f"  Secondary mode: {normalize_modes[1]}")
-    
-#     primary_norm = _normalize_with_nans(primary_data, mode=normalize_modes[0], p_lo=p_lo, p_hi=p_hi)
-#     secondary_norm = _normalize_with_nans(secondary_data, mode=normalize_modes[1], p_lo=p_lo, p_hi=p_hi)
-    
-#     # ===== GAMMA CORRECTION =====
-#     if gamma is not None:
-#         if verbose:
-#             print(f"  Applying gamma correction: {gamma}")
-        
-#         # Only apply to finite values
-#         finite_p = np.isfinite(primary_norm)
-#         finite_s = np.isfinite(secondary_norm)
-        
-#         primary_norm[finite_p] = np.power(primary_norm[finite_p], 1.0 / float(gamma))
-#         secondary_norm[finite_s] = np.power(secondary_norm[finite_s], 1.0 / float(gamma))
-    
-#     # ===== BUILD RGB IMAGE =====
-#     H, W = primary_norm.shape
-#     img = np.zeros((H, W, 3), dtype=float)
-    
-#     # Extract RGB components
-#     r_p, g_p, b_p = primary_color
-#     r_s, g_s, b_s = secondary_color
-#     r_nan, g_nan, b_nan = nan_color
-    
-#     # Create masks for valid data
-#     valid_primary = np.isfinite(primary_norm)
-#     valid_secondary = np.isfinite(secondary_norm)
-    
-#     # Initialize with NaN color
-#     img[:, :, 0] = r_nan
-#     img[:, :, 1] = g_nan
-#     img[:, :, 2] = b_nan
-    
-#     # Add primary channel (where valid)
-#     img[valid_primary, 0] += primary_norm[valid_primary] * r_p
-#     img[valid_primary, 1] += primary_norm[valid_primary] * g_p
-#     img[valid_primary, 2] += primary_norm[valid_primary] * b_p
-    
-#     # Add secondary channel (where valid)
-#     img[valid_secondary, 0] += secondary_norm[valid_secondary] * r_s
-#     img[valid_secondary, 1] += secondary_norm[valid_secondary] * g_s
-#     img[valid_secondary, 2] += secondary_norm[valid_secondary] * b_s
-    
-#     # Clip to valid range
-#     img = np.clip(img, 0.0, 1.0)
-    
-#     # ===== PLOTTING =====
-#     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-#     ax.imshow(img, origin="upper", aspect="auto", interpolation='nearest')
-    
-#     ax.set_xlabel("Time (frames)", fontsize=12)
-#     ax.set_ylabel("Trajectory index" if orientation == "rows=trajectories" else "Time index", fontsize=12)
-#     ax.set_xlim(0, W)
-#     ax.set_ylim(H, 0)
-#     ax.grid(False)
-    
-#     # Title
-#     if title is None:
-#         mode_str = "Simulation" if simulation_mode else "Experimental"
-#         shift_str = " (Shifted)" if shift_data else ""
-#         title = f"Dual-Channel Kymograph - {dataset} ({mode_str}){shift_str}"
-#     ax.set_title(title, fontsize=14, fontweight='bold')
-    
-#     # Legend
-#     # legend_text = (
-#     #     f"Primary (ch{primary_channel}): Green\n"
-#     #     f"Secondary (ch{secondary_channel}): Magenta\n"
-#     #     f"Overlap: White\n"
-#     #     f"Missing data: Black"
-#     # )
-#     # if shift_data:
-#     #     legend_text += "\n(Trajectories aligned)"
-    
-#     # ax.text(
-#     #     0.02, 0.98,
-#     #     legend_text,
-#     #     transform=ax.transAxes,
-#     #     va="top",
-#     #     ha="left",
-#     #     fontsize=10,
-#     #     bbox=dict(boxstyle="round,pad=0.5", fc=(0.95, 0.95, 0.95), ec=(0.3, 0.3, 0.3), alpha=0.9)
-#     # )
-    
-#     # Add data statistics
-#     n_valid_primary = np.sum(valid_primary)
-#     n_valid_secondary = np.sum(valid_secondary)
-#     total_pixels = H * W
-    
-#     # stats_text = (
-#     #     f"Total trajectories: {H}\n"
-#     #     f"Timepoints: {W}\n"
-#     #     f"Primary coverage: {100 * n_valid_primary / total_pixels:.1f}%\n"
-#     #     f"Secondary coverage: {100 * n_valid_secondary / total_pixels:.1f}%"
-#     # )
-#     # ax.text(
-#     #     0.98, 0.98,
-#     #     stats_text,
-#     #     transform=ax.transAxes,
-#     #     va="top",
-#     #     ha="right",
-#     #     fontsize=9,
-#     #     bbox=dict(boxstyle="round,pad=0.5", fc=(0.95, 0.95, 0.95), ec=(0.3, 0.3, 0.3), alpha=0.9)
-#     # )
-    
-#     plt.tight_layout()
-    
-#     # ===== SAVE =====
-#     if save_path:
-#         save_path = Path(save_path)
-#         save_path.parent.mkdir(parents=True, exist_ok=True)
-#         fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
-#         if verbose:
-#             print(f"\nSaved kymograph to: {save_path}")
-    
-#     # ===== DISPLAY =====
-#     if show:
-#         plt.show()
-#     else:
-#         plt.close(fig)
-    
-#     if verbose:
-#         print("\nKymograph generation complete")
-#         print("=" * 70)
-    
-#     return img, primary_data, secondary_data
-
-
-# def plot_dual_channel_kymograph(
-#     dataset='cof',
-#     data_folder=None,
-#     results_folder=None,
-#     selected_field='spot_int_ch_',
-#     primary_channel=1,
-#     secondary_channel=0,
-#     min_percentage_data_in_trajectory=0.2,
-#     max_missing_frames=3,
-#     min_snr=1,
-#     smooth_window=1,
-#     selected_indices=None,
-#     orientation="rows=trajectories",
-#     normalize="per_trace_percentile",
-#     p_lo=1,
-#     p_hi=99,
-#     gamma=None,
-#     sort_by_data_density=True,
-#     nan_color=(0.0, 0.0, 0.0),
-#     channel_colors=None,  # NEW PARAMETER
-#     title=None,
-#     figsize=(12, 6),
-#     dpi=150,
-#     save_path=None,
-#     show=True,
-#     verbose=True,
-#     simulation_mode=False,
-#     SSA_data_1=None,
-#     SSA_data_2=None,
-#     shift_data=False,
-# ):
-#     """
-#     Create a dual-channel kymograph for cotranslational folding analysis.
-    
-#     Compatible with both simulated and experimental data, handles missing timepoints,
-#     and uses default ImageJ-style colors from imports.py.
-    
-#     Parameters
-#     ----------
-#     dataset : str
-#         Dataset name
-#     data_folder : Path
-#         Folder containing experimental data
-#     results_folder : Path
-#         Folder to save results
-#     selected_field : str
-#         Base field name (e.g., 'spot_int_ch_')
-#     primary_channel : int
-#         Primary channel index (0 or 1)
-#     secondary_channel : int
-#         Secondary channel index (0 or 1)
-#     min_percentage_data_in_trajectory : float
-#         Minimum percentage of valid data required
-#     max_missing_frames : int
-#         Maximum consecutive NaN frames allowed
-#     min_snr : float
-#         Minimum SNR threshold
-#     smooth_window : int
-#         Smoothing window size
-#     selected_indices : array-like, optional
-#         Indices or boolean mask to subset trajectories
-#     orientation : str
-#         'rows=trajectories' or 'rows=time'
-#     normalize : str or list
-#         Normalization mode for each channel
-#     p_lo, p_hi : float
-#         Percentiles for normalization
-#     gamma : float, optional
-#         Gamma correction factor
-#     sort_by_data_density : bool
-#         If True, sort rows by number of valid timepoints (most data at top)
-#     nan_color : tuple or str
-#         RGB color for missing data (default black)
-#     channel_colors : list of 2 colors, optional
-#         Colors for [primary, secondary] channels.
-#         Each color can be:
-#         - Single letter: 'r', 'g', 'b', 'm', 'c', 'y', 'k', 'w'
-#         - Color name: 'red', 'green', 'blue', 'magenta', 'cyan', 'yellow', 'gray', 'white', 'black'
-#         - RGB tuple: (r, g, b) with values in [0, 1]
-#         - Hex string: '#ff0000'
-#         Default: ['green', 'magenta'] (uses color_green and color_magenta from imports.py)
-#     title : str, optional
-#         Plot title
-#     figsize : tuple
-#         Figure size (width, height)
-#     dpi : int
-#         Figure resolution
-#     save_path : Path, optional
-#         Path to save figure
-#     show : bool
-#         Whether to display the plot
-#     verbose : bool
-#         Print progress messages
-#     simulation_mode : bool
-#         Use simulated data instead of loading from files
-#     SSA_data_1 : ndarray, optional
-#         Simulated primary channel data
-#     SSA_data_2 : ndarray, optional
-#         Simulated secondary channel data
-#     shift_data : bool, optional
-#         If True, shift trajectories to align first valid data point to the left.
-#         Default: False (preserve original temporal alignment)
-    
-#     Returns
-#     -------
-#     img : ndarray
-#         RGB kymograph image (H, W, 3)
-#     primary_data : ndarray
-#         Primary channel data used (after shifting if shift_data=True)
-#     secondary_data : ndarray
-#         Secondary channel data used (after shifting if shift_data=True)
-#     """
-    
-#     # ===== COLOR PARSING HELPER =====
-#     def _parse_color(color_spec):
-#         """
-#         Parse color specification to RGB tuple in [0, 1].
-        
-#         Accepts:
-#         - Single letter: 'r', 'g', 'b', 'm', 'c', 'y', 'k', 'w'
-#         - Color name: 'red', 'green', 'magenta', etc.
-#         - RGB tuple: (r, g, b)
-#         - Hex string: '#ff0000'
-        
-#         Returns (r, g, b) tuple.
-#         """
-#         # Single letter shortcuts
-#         LETTER_TO_COLOR = {
-#             'r': (1.0, 0.0, 0.0),   # red
-#             'g': (0.0, 1.0, 0.0),   # green
-#             'b': (0.0, 0.0, 1.0),   # blue
-#             'm': (1.0, 0.0, 1.0),   # magenta
-#             'c': (0.0, 1.0, 1.0),   # cyan
-#             'y': (1.0, 1.0, 0.0),   # yellow
-#             'k': (0.0, 0.0, 0.0),   # black
-#             'w': (1.0, 1.0, 1.0),   # white
-#         }
-        
-#         # ImageJ color names
-#         IMAGEJ_COLORS = {
-#             "red": (1.0, 0.0, 0.0),
-#             "green": (0.0, 1.0, 0.0),
-#             "blue": (0.0, 0.0, 1.0),
-#             "magenta": (1.0, 0.0, 1.0),
-#             "cyan": (0.0, 1.0, 1.0),
-#             "yellow": (1.0, 1.0, 0.0),
-#             "gray": (1/3, 1/3, 1/3),
-#             "white": (1.0, 1.0, 1.0),
-#             "black": (0.0, 0.0, 0.0),
-#         }
-        
-#         # If already RGB tuple
-#         if isinstance(color_spec, (list, tuple, np.ndarray)) and len(color_spec) == 3:
-#             r, g, b = map(float, color_spec)
-#             return (float(np.clip(r, 0, 1)), float(np.clip(g, 0, 1)), float(np.clip(b, 0, 1)))
-        
-#         # Convert to string
-#         color_str = str(color_spec).lower().strip()
-        
-#         # Check single letter
-#         if len(color_str) == 1 and color_str in LETTER_TO_COLOR:
-#             return LETTER_TO_COLOR[color_str]
-        
-#         # Check ImageJ color names
-#         if color_str in IMAGEJ_COLORS:
-#             return IMAGEJ_COLORS[color_str]
-        
-#         # Try matplotlib color parsing (for hex codes, etc.)
-#         try:
-#             from matplotlib.colors import to_rgb
-#             return to_rgb(color_spec)
-#         except:
-#             raise ValueError(
-#                 f"Could not parse color '{color_spec}'. "
-#                 f"Use: single letter ('r', 'g', 'b', 'm', 'c', 'y', 'k', 'w'), "
-#                 f"color name ('red', 'green', etc.), RGB tuple, or hex code."
-#             )
-    
-#     def _get_color_name(rgb_tuple):
-#         """Get a readable name for an RGB color."""
-#         COLOR_NAMES = {
-#             (1.0, 0.0, 0.0): "Red",
-#             (0.0, 1.0, 0.0): "Green",
-#             (0.0, 0.0, 1.0): "Blue",
-#             (1.0, 0.0, 1.0): "Magenta",
-#             (0.0, 1.0, 1.0): "Cyan",
-#             (1.0, 1.0, 0.0): "Yellow",
-#             (1.0, 1.0, 1.0): "White",
-#             (0.0, 0.0, 0.0): "Black",
-#         }
-#         # Round to nearest 0.1 for matching
-#         rounded = tuple(round(c, 1) for c in rgb_tuple)
-#         return COLOR_NAMES.get(rounded, f"RGB{rgb_tuple}")
-    
-#     def _compute_additive_blend(color1, color2):
-#         """Compute additive color blend (for overlap region)."""
-#         r = min(color1[0] + color2[0], 1.0)
-#         g = min(color1[1] + color2[1], 1.0)
-#         b = min(color1[2] + color2[2], 1.0)
-#         return (r, g, b)
-    
-#     # ===== SETUP COLORS =====
-#     if channel_colors is None:
-#         # Use default colors from imports.py
-#         try:
-#             from imports import color_green, color_magenta
-#             primary_color = color_green
-#             secondary_color = color_magenta
-#         except ImportError:
-#             # Fallback if imports.py not available
-#             primary_color = (0.0, 1.0, 0.0)  # green
-#             secondary_color = (1.0, 0.0, 1.0)  # magenta
-#     else:
-#         # Parse user-provided colors
-#         if not isinstance(channel_colors, (list, tuple)) or len(channel_colors) != 2:
-#             raise ValueError("channel_colors must be a list of 2 colors: [primary_color, secondary_color]")
-        
-#         primary_color = _parse_color(channel_colors[0])
-#         secondary_color = _parse_color(channel_colors[1])
-    
-#     # Compute overlap color
-#     overlap_color = _compute_additive_blend(primary_color, secondary_color)
-    
-#     # Parse NaN color
-#     nan_color_rgb = _parse_color(nan_color)
-    
-#     if verbose:
-#         print("=" * 70)
-#         print("DUAL-CHANNEL KYMOGRAPH GENERATION")
-#         print("=" * 70)
-#         print(f"Dataset: {dataset}")
-#         print(f"Mode: {'SIMULATION' if simulation_mode else 'EXPERIMENTAL'}")
-#         print(f"Primary channel: {primary_channel} (color: {_get_color_name(primary_color)})")
-#         print(f"Secondary channel: {secondary_channel} (color: {_get_color_name(secondary_color)})")
-#         print(f"Overlap color: {_get_color_name(overlap_color)}")
-#         print(f"Shift data: {'YES' if shift_data else 'NO'}")
-    
-#     # ===== DATA LOADING =====
-#     if simulation_mode:
-#         # Use simulated data
-#         if SSA_data_1 is None or SSA_data_2 is None:
-#             raise ValueError("simulation_mode=True requires SSA_data_1 and SSA_data_2")
-        
-#         primary_data = SSA_data_1.copy()
-#         secondary_data = SSA_data_2.copy()
-        
-#         if verbose:
-#             print(f"\nLoaded simulated data:")
-#             print(f"  Primary shape: {primary_data.shape}")
-#             print(f"  Secondary shape: {secondary_data.shape}")
-    
-#     else:
-#         # Load experimental data
-#         if data_folder is None:
-#             raise ValueError("data_folder required when simulation_mode=False")
-        
-#         folder_with_files, _, dataframe_prefix = dataset_selection(
-#             dataset, data_folder, control_spots_mode=False, downsample=False
-#         )
-        
-#         if verbose:
-#             print(f"\nLoading experimental data from: {folder_with_files}")
-        
-#         try:
-#             primary_data, secondary_data, n_cells = load_dual_channel_tracking_data(
-#                 folder_with_files,
-#                 base_field=selected_field,
-#                 primary_channel=primary_channel,
-#                 secondary_channel=secondary_channel,
-#                 min_percentage_data_in_trajectory=min_percentage_data_in_trajectory,
-#                 dataframe_prefix=dataframe_prefix,
-#                 min_snr=min_snr,
-#                 max_missing_frames=max_missing_frames,
-#                 smooth_window=smooth_window,
-#                 verbose=verbose
-#             )
-#         except Exception as e:
-#             raise RuntimeError(f"Failed to load dual-channel data: {e}")
-        
-#         if verbose:
-#             print(f"\nLoaded experimental data:")
-#             print(f"  Number of cells: {n_cells}")
-#             print(f"  Primary shape: {primary_data.shape}")
-#             print(f"  Secondary shape: {secondary_data.shape}")
-    
-#     # ===== VALIDATION =====
-#     if primary_data.shape != secondary_data.shape:
-#         raise ValueError(
-#             f"Primary and secondary data must have same shape, "
-#             f"got {primary_data.shape} vs {secondary_data.shape}"
-#         )
-    
-#     n_traces, n_time = primary_data.shape
-    
-#     if n_traces == 0:
-#         raise ValueError("No trajectories loaded")
-    
-#     if verbose:
-#         print(f"\nData summary:")
-#         print(f"  Total trajectories: {n_traces}")
-#         print(f"  Timepoints per trajectory: {n_time}")
-    
-#     # ===== SHIFT DATA =====
-#     if shift_data:
-#         if verbose:
-#             print("\nShifting trajectories to align first valid datapoint...")
-        
-#         try:
-#             primary_shifted, secondary_shifted = mi.Utilities().shift_trajectories(
-#                 array_ch0=primary_data,
-#                 array_ch1=secondary_data,
-#                 min_percentage_data_in_trajectory=min_percentage_data_in_trajectory,
-#                 max_missing_frames=max_missing_frames
-#             )
-            
-#             primary_data = primary_shifted
-#             secondary_data = secondary_shifted
-            
-#             if verbose:
-#                 print(f"  Trajectories after shifting: {primary_data.shape[0]}")
-#                 if primary_data.shape[0] < n_traces:
-#                     print(f"  Removed {n_traces - primary_data.shape[0]} trajectories during shifting")
-                
-#                 n_traces = primary_data.shape[0]
-                
-#         except Exception as e:
-#             if verbose:
-#                 print(f"  WARNING: Shifting failed ({e}), continuing without shift")
-    
-#     # ===== SORT BY DATA DENSITY =====
-#     if sort_by_data_density:
-#         valid_counts_primary = np.sum(np.isfinite(primary_data), axis=1)
-#         valid_counts_secondary = np.sum(np.isfinite(secondary_data), axis=1)
-#         valid_counts_total = valid_counts_primary + valid_counts_secondary
-        
-#         sort_indices = np.argsort(-valid_counts_total)
-#         primary_data = primary_data[sort_indices, :]
-#         secondary_data = secondary_data[sort_indices, :]
-        
-#         if verbose:
-#             print(f"\nSorted trajectories by data density:")
-#             print(f"  Top trajectory has {int(valid_counts_total[sort_indices[0]])} valid points")
-#             print(f"  Bottom trajectory has {int(valid_counts_total[sort_indices[-1]])} valid points")
-    
-#     # ===== SUBSET SELECTION =====
-#     if selected_indices is not None:
-#         selected_indices = np.asarray(selected_indices)
-#         if selected_indices.dtype == bool:
-#             primary_data = primary_data[selected_indices, :]
-#             secondary_data = secondary_data[selected_indices, :]
-#         else:
-#             primary_data = primary_data[selected_indices]
-#             secondary_data = secondary_data[selected_indices]
-        
-#         if verbose:
-#             print(f"\nApplied trajectory selection:")
-#             print(f"  Selected {primary_data.shape[0]} trajectories")
-    
-#     # ===== NORMALIZATION WITH NAN HANDLING =====
-#     def _normalize_with_nans(X, mode="per_trace_percentile", p_lo=1, p_hi=99, eps=1e-9):
-#         """Normalize array handling NaNs properly."""
-#         X = np.asarray(X, dtype=float)
-#         X_norm = np.full_like(X, np.nan)
-        
-#         for i in range(X.shape[0]):
-#             row = X[i, :]
-#             finite_mask = np.isfinite(row)
-            
-#             if not np.any(finite_mask):
-#                 continue
-            
-#             finite_vals = row[finite_mask]
-            
-#             if mode == "per_trace_percentile":
-#                 lo = np.percentile(finite_vals, p_lo)
-#                 hi = np.percentile(finite_vals, p_hi)
-#                 scale = max(hi - lo, eps)
-#                 row_norm = (row - lo) / scale
-#             elif mode == "per_trace_max":
-#                 m = np.max(finite_vals)
-#                 m = max(m, eps)
-#                 row_norm = row / m
-#             elif mode == "global_percentile":
-#                 all_finite = X[np.isfinite(X)]
-#                 if all_finite.size > 0:
-#                     lo = np.percentile(all_finite, p_lo)
-#                     hi = np.percentile(all_finite, p_hi)
-#                     scale = max(hi - lo, eps)
-#                     row_norm = (row - lo) / scale
-#                 else:
-#                     row_norm = row
-#             elif mode == "zscore":
-#                 mu = np.mean(finite_vals)
-#                 sd = np.std(finite_vals) + eps
-#                 Z = (row - mu) / sd
-#                 row_norm = (Z + 2) / 4.0
-#             else:
-#                 raise ValueError(f"Unknown normalization mode: {mode}")
-            
-#             X_norm[i, :] = np.clip(row_norm, 0.0, 1.0)
-        
-#         return X_norm
-    
-#     if isinstance(normalize, str):
-#         normalize_modes = [normalize, normalize]
-#     else:
-#         normalize_modes = list(normalize)
-    
-#     if verbose:
-#         print(f"\nNormalizing data:")
-#         print(f"  Primary mode: {normalize_modes[0]}")
-#         print(f"  Secondary mode: {normalize_modes[1]}")
-    
-#     primary_norm = _normalize_with_nans(primary_data, mode=normalize_modes[0], p_lo=p_lo, p_hi=p_hi)
-#     secondary_norm = _normalize_with_nans(secondary_data, mode=normalize_modes[1], p_lo=p_lo, p_hi=p_hi)
-    
-#     # ===== GAMMA CORRECTION =====
-#     if gamma is not None:
-#         if verbose:
-#             print(f"  Applying gamma correction: {gamma}")
-        
-#         finite_p = np.isfinite(primary_norm)
-#         finite_s = np.isfinite(secondary_norm)
-        
-#         primary_norm[finite_p] = np.power(primary_norm[finite_p], 1.0 / float(gamma))
-#         secondary_norm[finite_s] = np.power(secondary_norm[finite_s], 1.0 / float(gamma))
-    
-#     # ===== BUILD RGB IMAGE =====
-#     H, W = primary_norm.shape
-#     img = np.zeros((H, W, 3), dtype=float)
-    
-#     r_p, g_p, b_p = primary_color
-#     r_s, g_s, b_s = secondary_color
-#     r_nan, g_nan, b_nan = nan_color_rgb
-    
-#     valid_primary = np.isfinite(primary_norm)
-#     valid_secondary = np.isfinite(secondary_norm)
-    
-#     # Initialize with NaN color
-#     img[:, :, 0] = r_nan
-#     img[:, :, 1] = g_nan
-#     img[:, :, 2] = b_nan
-    
-#     # Add primary channel (where valid)
-#     img[valid_primary, 0] += primary_norm[valid_primary] * r_p
-#     img[valid_primary, 1] += primary_norm[valid_primary] * g_p
-#     img[valid_primary, 2] += primary_norm[valid_primary] * b_p
-    
-#     # Add secondary channel (where valid)
-#     img[valid_secondary, 0] += secondary_norm[valid_secondary] * r_s
-#     img[valid_secondary, 1] += secondary_norm[valid_secondary] * g_s
-#     img[valid_secondary, 2] += secondary_norm[valid_secondary] * b_s
-    
-#     # Clip to valid range
-#     img = np.clip(img, 0.0, 1.0)
-    
-#     # ===== PLOTTING =====
-#     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-#     ax.imshow(img, origin="upper", aspect="auto", interpolation='nearest')
-    
-#     ax.set_xlabel("Time (frames)", fontsize=12)
-#     ax.set_ylabel("Trajectory index" if orientation == "rows=trajectories" else "Time index", fontsize=12)
-#     ax.set_xlim(0, W)
-#     ax.set_ylim(H, 0)
-#     ax.grid(False)
-    
-#     # Title
-#     if title is None:
-#         mode_str = "Simulation" if simulation_mode else "Experimental"
-#         shift_str = " (Shifted)" if shift_data else ""
-#         title = f"Dual-Channel Kymograph - {dataset} ({mode_str}){shift_str}"
-#     ax.set_title(title, fontsize=14, fontweight='bold')
-    
-#     plt.tight_layout()
-    
-#     # ===== SAVE =====
-#     if save_path:
-#         save_path = Path(save_path)
-#         save_path.parent.mkdir(parents=True, exist_ok=True)
-#         fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
-#         if verbose:
-#             print(f"\nSaved kymograph to: {save_path}")
-    
-#     # ===== DISPLAY =====
-#     if show:
-#         plt.show()
-#     else:
-#         plt.close(fig)
-    
-#     if verbose:
-#         print("\nKymograph generation complete")
-#         print("=" * 70)
-    
-#     return img, primary_data, secondary_data
-
-
-# def plot_dual_channel_kymograph(
-#     dataset='cof',
-#     data_folder=None,
-#     results_folder=None,
-#     selected_field='spot_int_ch_',
-#     primary_channel=1,
-#     secondary_channel=0,
-#     min_percentage_data_in_trajectory=0.2,
-#     max_missing_frames=3,
-#     min_snr=1,
-#     smooth_window=1,
-#     selected_indices=None,
-#     orientation="rows=trajectories",
-#     normalize="per_trace_percentile",
-#     p_lo=1,
-#     p_hi=99,
-#     gamma=None,
-#     sort_by_data_density=True,
-#     nan_color=(0.0, 0.0, 0.0),
-#     channel_colors=None,
-#     title=None,
-#     figsize=(12, 6),
-#     dpi=150,
-#     save_path=None,
-#     show=True,
-#     verbose=True,
-#     simulation_mode=False,
-#     SSA_data_1=None,
-#     SSA_data_2=None,
-#     shift_data=False,
-#     use_binarization=False,  # NEW PARAMETER
-#     binarization_threshold=0.5,  
-# ):
-#     """
-#     Create a dual-channel kymograph for cotranslational folding analysis.
-    
-#     Compatible with both simulated and experimental data, handles missing timepoints,
-#     and uses default ImageJ-style colors from imports.py.
-    
-#     Parameters
-#     ----------
-#     dataset : str
-#         Dataset name
-#     data_folder : Path
-#         Folder containing experimental data
-#     results_folder : Path
-#         Folder to save results
-#     selected_field : str
-#         Base field name (e.g., 'spot_int_ch_')
-#     primary_channel : int
-#         Primary channel index (0 or 1)
-#     secondary_channel : int
-#         Secondary channel index (0 or 1)
-#     min_percentage_data_in_trajectory : float
-#         Minimum percentage of valid data required
-#     max_missing_frames : int
-#         Maximum consecutive NaN frames allowed
-#     min_snr : float
-#         Minimum SNR threshold
-#     smooth_window : int
-#         Smoothing window size
-#     selected_indices : array-like, optional
-#         Indices or boolean mask to subset trajectories
-#     orientation : str
-#         'rows=trajectories' or 'rows=time'
-#     normalize : str or list
-#         Normalization mode for each channel
-#     p_lo, p_hi : float
-#         Percentiles for normalization
-#     gamma : float, optional
-#         Gamma correction factor
-#     sort_by_data_density : bool
-#         If True, sort rows by number of valid timepoints (most data at top)
-#     nan_color : tuple or str
-#         RGB color for missing data (default black)
-#     channel_colors : list of 2 colors, optional
-#         Colors for [primary, secondary] channels.
-#         Each color can be:
-#         - Single letter: 'r', 'g', 'b', 'm', 'c', 'y', 'k', 'w'
-#         - Color name: 'red', 'green', 'blue', 'magenta', 'cyan', 'yellow', 'gray', 'white', 'black'
-#         - RGB tuple: (r, g, b) with values in [0, 1]
-#         - Hex string: '#ff0000'
-#         Default: ['green', 'magenta'] (uses color_green and color_magenta from imports.py)
-#     title : str, optional
-#         Plot title
-#     figsize : tuple
-#         Figure size (width, height)
-#     dpi : int
-#         Figure resolution
-#     save_path : Path, optional
-#         Path to save figure
-#     show : bool
-#         Whether to display the plot
-#     verbose : bool
-#         Print progress messages
-#     simulation_mode : bool
-#         Use simulated data instead of loading from files
-#     SSA_data_1 : ndarray, optional
-#         Simulated primary channel data
-#     SSA_data_2 : ndarray, optional
-#         Simulated secondary channel data
-#     shift_data : bool, optional
-#         If True, shift trajectories to align first valid data point to the left.
-#         Default: False (preserve original temporal alignment)
-#     use_binarization : bool, optional
-#         If True, binarize signals using threshold (reduces noise).
-#         Values below threshold → 0 (black/off)
-#         Values above threshold → 1 (full color/on)
-#         When both channels are ON → overlap color
-#         Default: False (use continuous normalized values)
-#     binarization_threshold : float, optional
-#         Threshold for binarization (applied after normalization).
-#         Only used if use_binarization=True.
-#         Default: 0.5 (50% of normalized range)
-    
-#     Returns
-#     -------
-#     img : ndarray
-#         RGB kymograph image (H, W, 3)
-#     primary_data : ndarray
-#         Primary channel data used (after shifting if shift_data=True)
-#     secondary_data : ndarray
-#         Secondary channel data used (after shifting if shift_data=True)
-#     """
-    
-#     # ===== COLOR PARSING HELPER =====
-#     def _parse_color(color_spec):
-#         """Parse color specification to RGB tuple in [0, 1]."""
-#         LETTER_TO_COLOR = {
-#             'r': (1.0, 0.0, 0.0), 'g': (0.0, 1.0, 0.0), 'b': (0.0, 0.0, 1.0),
-#             'm': (1.0, 0.0, 1.0), 'c': (0.0, 1.0, 1.0), 'y': (1.0, 1.0, 0.0),
-#             'k': (0.0, 0.0, 0.0), 'w': (1.0, 1.0, 1.0),
-#         }
-#         IMAGEJ_COLORS = {
-#             "red": (1.0, 0.0, 0.0), "green": (0.0, 1.0, 0.0), "blue": (0.0, 0.0, 1.0),
-#             "magenta": (1.0, 0.0, 1.0), "cyan": (0.0, 1.0, 1.0), "yellow": (1.0, 1.0, 0.0),
-#             "gray": (1/3, 1/3, 1/3), "white": (1.0, 1.0, 1.0), "black": (0.0, 0.0, 0.0),
-#         }
-        
-#         if isinstance(color_spec, (list, tuple, np.ndarray)) and len(color_spec) == 3:
-#             r, g, b = map(float, color_spec)
-#             return (float(np.clip(r, 0, 1)), float(np.clip(g, 0, 1)), float(np.clip(b, 0, 1)))
-        
-#         color_str = str(color_spec).lower().strip()
-#         if len(color_str) == 1 and color_str in LETTER_TO_COLOR:
-#             return LETTER_TO_COLOR[color_str]
-#         if color_str in IMAGEJ_COLORS:
-#             return IMAGEJ_COLORS[color_str]
-        
-#         try:
-#             from matplotlib.colors import to_rgb
-#             return to_rgb(color_spec)
-#         except:
-#             raise ValueError(f"Could not parse color '{color_spec}'")
-    
-#     def _get_color_name(rgb_tuple):
-#         """Get readable name for RGB color."""
-#         COLOR_NAMES = {
-#             (1.0, 0.0, 0.0): "Red", (0.0, 1.0, 0.0): "Green", (0.0, 0.0, 1.0): "Blue",
-#             (1.0, 0.0, 1.0): "Magenta", (0.0, 1.0, 1.0): "Cyan", (1.0, 1.0, 0.0): "Yellow",
-#             (1.0, 1.0, 1.0): "White", (0.0, 0.0, 0.0): "Black",
-#         }
-#         rounded = tuple(round(c, 1) for c in rgb_tuple)
-#         return COLOR_NAMES.get(rounded, f"RGB{rgb_tuple}")
-    
-#     def _compute_additive_blend(color1, color2):
-#         """Compute additive color blend."""
-#         r = min(color1[0] + color2[0], 1.0)
-#         g = min(color1[1] + color2[1], 1.0)
-#         b = min(color1[2] + color2[2], 1.0)
-#         return (r, g, b)
-    
-#     # ===== SETUP COLORS =====
-#     if channel_colors is None:
-#         try:
-#             from imports import color_green, color_magenta
-#             primary_color = color_green
-#             secondary_color = color_magenta
-#         except ImportError:
-#             primary_color = (0.0, 1.0, 0.0)
-#             secondary_color = (1.0, 0.0, 1.0)
-#     else:
-#         if not isinstance(channel_colors, (list, tuple)) or len(channel_colors) != 2:
-#             raise ValueError("channel_colors must be a list of 2 colors")
-#         primary_color = _parse_color(channel_colors[0])
-#         secondary_color = _parse_color(channel_colors[1])
-    
-#     overlap_color = _compute_additive_blend(primary_color, secondary_color)
-#     nan_color_rgb = _parse_color(nan_color)
-    
-#     if verbose:
-#         print("=" * 70)
-#         print("DUAL-CHANNEL KYMOGRAPH GENERATION")
-#         print("=" * 70)
-#         print(f"Dataset: {dataset}")
-#         print(f"Mode: {'SIMULATION' if simulation_mode else 'EXPERIMENTAL'}")
-#         print(f"Primary channel: {primary_channel} (color: {_get_color_name(primary_color)})")
-#         print(f"Secondary channel: {secondary_channel} (color: {_get_color_name(secondary_color)})")
-#         print(f"Overlap color: {_get_color_name(overlap_color)}")
-#         print(f"Shift data: {'YES' if shift_data else 'NO'}")
-#         print(f"Binarization: {'YES (threshold={})'.format(binarization_threshold) if use_binarization else 'NO'}")
-    
-#     # ===== DATA LOADING =====
-#     if simulation_mode:
-#         if SSA_data_1 is None or SSA_data_2 is None:
-#             raise ValueError("simulation_mode=True requires SSA_data_1 and SSA_data_2")
-#         primary_data = SSA_data_1.copy()
-#         secondary_data = SSA_data_2.copy()
-#         if verbose:
-#             print(f"\nLoaded simulated data:")
-#             print(f"  Primary shape: {primary_data.shape}")
-#             print(f"  Secondary shape: {secondary_data.shape}")
-#     else:
-#         if data_folder is None:
-#             raise ValueError("data_folder required when simulation_mode=False")
-        
-#         folder_with_files, _, dataframe_prefix = dataset_selection(
-#             dataset, data_folder, control_spots_mode=False, downsample=False
-#         )
-        
-#         if verbose:
-#             print(f"\nLoading experimental data from: {folder_with_files}")
-        
-#         try:
-#             primary_data, secondary_data, n_cells = load_dual_channel_tracking_data(
-#                 folder_with_files, base_field=selected_field,
-#                 primary_channel=primary_channel, secondary_channel=secondary_channel,
-#                 min_percentage_data_in_trajectory=min_percentage_data_in_trajectory,
-#                 dataframe_prefix=dataframe_prefix, min_snr=min_snr,
-#                 max_missing_frames=max_missing_frames, smooth_window=smooth_window,
-#                 verbose=verbose
-#             )
-#         except Exception as e:
-#             raise RuntimeError(f"Failed to load dual-channel data: {e}")
-        
-#         if verbose:
-#             print(f"\nLoaded experimental data:")
-#             print(f"  Number of cells: {n_cells}")
-#             print(f"  Primary shape: {primary_data.shape}")
-#             print(f"  Secondary shape: {secondary_data.shape}")
-    
-#     # ===== VALIDATION =====
-#     if primary_data.shape != secondary_data.shape:
-#         raise ValueError(f"Shape mismatch: {primary_data.shape} vs {secondary_data.shape}")
-    
-#     n_traces, n_time = primary_data.shape
-#     if n_traces == 0:
-#         raise ValueError("No trajectories loaded")
-    
-#     if verbose:
-#         print(f"\nData summary:")
-#         print(f"  Total trajectories: {n_traces}")
-#         print(f"  Timepoints per trajectory: {n_time}")
-    
-#     # ===== SHIFT DATA =====
-#     if shift_data:
-#         if verbose:
-#             print("\nShifting trajectories to align first valid datapoint...")
-#         try:
-#             primary_shifted, secondary_shifted = mi.Utilities().shift_trajectories(
-#                 array_ch0=primary_data, array_ch1=secondary_data,
-#                 min_percentage_data_in_trajectory=min_percentage_data_in_trajectory,
-#                 max_missing_frames=max_missing_frames
-#             )
-#             primary_data = primary_shifted
-#             secondary_data = secondary_shifted
-#             if verbose:
-#                 print(f"  Trajectories after shifting: {primary_data.shape[0]}")
-#                 if primary_data.shape[0] < n_traces:
-#                     print(f"  Removed {n_traces - primary_data.shape[0]} trajectories")
-#                 n_traces = primary_data.shape[0]
-#         except Exception as e:
-#             if verbose:
-#                 print(f"  WARNING: Shifting failed ({e})")
-    
-#     # ===== SORT BY DATA DENSITY =====
-#     if sort_by_data_density:
-#         valid_counts_primary = np.sum(np.isfinite(primary_data), axis=1)
-#         valid_counts_secondary = np.sum(np.isfinite(secondary_data), axis=1)
-#         valid_counts_total = valid_counts_primary + valid_counts_secondary
-#         sort_indices = np.argsort(-valid_counts_total)
-#         primary_data = primary_data[sort_indices, :]
-#         secondary_data = secondary_data[sort_indices, :]
-#         if verbose:
-#             print(f"\nSorted trajectories by data density:")
-#             print(f"  Top: {int(valid_counts_total[sort_indices[0]])} valid points")
-#             print(f"  Bottom: {int(valid_counts_total[sort_indices[-1]])} valid points")
-    
-#     # ===== SUBSET SELECTION =====
-#     if selected_indices is not None:
-#         selected_indices = np.asarray(selected_indices)
-#         if selected_indices.dtype == bool:
-#             primary_data = primary_data[selected_indices, :]
-#             secondary_data = secondary_data[selected_indices, :]
-#         else:
-#             primary_data = primary_data[selected_indices]
-#             secondary_data = secondary_data[selected_indices]
-#         if verbose:
-#             print(f"\nApplied trajectory selection: {primary_data.shape[0]} trajectories")
-    
-#     # ===== NORMALIZATION WITH NAN HANDLING =====
-#     def _normalize_with_nans(X, mode="per_trace_percentile", p_lo=1, p_hi=99, eps=1e-9):
-#         """Normalize array handling NaNs properly."""
-#         X = np.asarray(X, dtype=float)
-#         X_norm = np.full_like(X, np.nan)
-        
-#         for i in range(X.shape[0]):
-#             row = X[i, :]
-#             finite_mask = np.isfinite(row)
-#             if not np.any(finite_mask):
-#                 continue
-#             finite_vals = row[finite_mask]
-            
-#             if mode == "per_trace_percentile":
-#                 lo = np.percentile(finite_vals, p_lo)
-#                 hi = np.percentile(finite_vals, p_hi)
-#                 scale = max(hi - lo, eps)
-#                 row_norm = (row - lo) / scale
-#             elif mode == "per_trace_max":
-#                 m = np.max(finite_vals)
-#                 row_norm = row / max(m, eps)
-#             elif mode == "global_percentile":
-#                 all_finite = X[np.isfinite(X)]
-#                 if all_finite.size > 0:
-#                     lo = np.percentile(all_finite, p_lo)
-#                     hi = np.percentile(all_finite, p_hi)
-#                     scale = max(hi - lo, eps)
-#                     row_norm = (row - lo) / scale
-#                 else:
-#                     row_norm = row
-#             elif mode == "zscore":
-#                 mu = np.mean(finite_vals)
-#                 sd = np.std(finite_vals) + eps
-#                 Z = (row - mu) / sd
-#                 row_norm = (Z + 2) / 4.0
-#             else:
-#                 raise ValueError(f"Unknown normalization mode: {mode}")
-            
-#             X_norm[i, :] = np.clip(row_norm, 0.0, 1.0)
-#         return X_norm
-    
-#     if isinstance(normalize, str):
-#         normalize_modes = [normalize, normalize]
-#     else:
-#         normalize_modes = list(normalize)
-    
-#     if verbose:
-#         print(f"\nNormalizing data:")
-#         print(f"  Primary mode: {normalize_modes[0]}")
-#         print(f"  Secondary mode: {normalize_modes[1]}")
-    
-#     primary_norm = _normalize_with_nans(primary_data, mode=normalize_modes[0], p_lo=p_lo, p_hi=p_hi)
-#     secondary_norm = _normalize_with_nans(secondary_data, mode=normalize_modes[1], p_lo=p_lo, p_hi=p_hi)
-    
-#     # ===== GAMMA CORRECTION =====
-#     if gamma is not None and not use_binarization:
-#         if verbose:
-#             print(f"  Applying gamma correction: {gamma}")
-#         finite_p = np.isfinite(primary_norm)
-#         finite_s = np.isfinite(secondary_norm)
-#         primary_norm[finite_p] = np.power(primary_norm[finite_p], 1.0 / float(gamma))
-#         secondary_norm[finite_s] = np.power(secondary_norm[finite_s], 1.0 / float(gamma))
-    
-#     # ===== BINARIZATION (NEW SECTION) =====
-#     if use_binarization:
-#         if verbose:
-#             print(f"\nApplying binarization:")
-#             print(f"  Threshold: {binarization_threshold}")
-        
-#         # Create binary masks (1 where above threshold, 0 where below, NaN stays NaN)
-#         primary_binary = np.full_like(primary_norm, np.nan)
-#         secondary_binary = np.full_like(secondary_norm, np.nan)
-        
-#         # Apply threshold to finite values only
-#         finite_p = np.isfinite(primary_norm)
-#         finite_s = np.isfinite(secondary_norm)
-        
-#         primary_binary[finite_p] = (primary_norm[finite_p] >= binarization_threshold).astype(float)
-#         secondary_binary[finite_s] = (secondary_norm[finite_s] >= binarization_threshold).astype(float)
-        
-#         # Count ON pixels
-#         n_primary_on = np.sum(primary_binary == 1.0)
-#         n_secondary_on = np.sum(secondary_binary == 1.0)
-#         n_both_on = np.sum((primary_binary == 1.0) & (secondary_binary == 1.0))
-        
-#         if verbose:
-#             total_valid = np.sum(finite_p | finite_s)
-#             print(f"  Primary ON: {n_primary_on}/{total_valid} ({100*n_primary_on/max(1,total_valid):.1f}%)")
-#             print(f"  Secondary ON: {n_secondary_on}/{total_valid} ({100*n_secondary_on/max(1,total_valid):.1f}%)")
-#             print(f"  Both ON (overlap): {n_both_on}/{total_valid} ({100*n_both_on/max(1,total_valid):.1f}%)")
-        
-#         # Use binary values for rendering
-#         primary_norm = primary_binary
-#         secondary_norm = secondary_binary
-    
-#     # ===== BUILD RGB IMAGE =====
-#     H, W = primary_norm.shape
-#     img = np.zeros((H, W, 3), dtype=float)
-    
-#     r_p, g_p, b_p = primary_color
-#     r_s, g_s, b_s = secondary_color
-#     r_nan, g_nan, b_nan = nan_color_rgb
-    
-#     valid_primary = np.isfinite(primary_norm)
-#     valid_secondary = np.isfinite(secondary_norm)
-    
-#     # Initialize with NaN color
-#     img[:, :, 0] = r_nan
-#     img[:, :, 1] = g_nan
-#     img[:, :, 2] = b_nan
-    
-#     if use_binarization:
-#         # ===== BINARIZED RENDERING =====
-#         # Only show color where signal is ON (value = 1.0)
-#         primary_on = (primary_norm == 1.0)
-#         secondary_on = (secondary_norm == 1.0)
-        
-#         # Primary only (green)
-#         img[primary_on, 0] = r_p
-#         img[primary_on, 1] = g_p
-#         img[primary_on, 2] = b_p
-        
-#         # Secondary only (magenta) - will overwrite primary in overlap regions
-#         img[secondary_on, 0] = r_s
-#         img[secondary_on, 1] = g_s
-#         img[secondary_on, 2] = b_s
-        
-#         # Both ON (overlap color = additive blend)
-#         both_on = primary_on & secondary_on
-#         overlap_r, overlap_g, overlap_b = overlap_color
-#         img[both_on, 0] = overlap_r
-#         img[both_on, 1] = overlap_g
-#         img[both_on, 2] = overlap_b
-        
-#     else:
-#         # ===== CONTINUOUS RENDERING (original behavior) =====
-#         img[valid_primary, 0] += primary_norm[valid_primary] * r_p
-#         img[valid_primary, 1] += primary_norm[valid_primary] * g_p
-#         img[valid_primary, 2] += primary_norm[valid_primary] * b_p
-        
-#         img[valid_secondary, 0] += secondary_norm[valid_secondary] * r_s
-#         img[valid_secondary, 1] += secondary_norm[valid_secondary] * g_s
-#         img[valid_secondary, 2] += secondary_norm[valid_secondary] * b_s
-    
-#     # Clip to valid range
-#     img = np.clip(img, 0.0, 1.0)
-    
-#     # ===== PLOTTING =====
-#     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-#     ax.imshow(img, origin="upper", aspect="auto", interpolation='nearest')
-    
-#     ax.set_xlabel("Time (frames)", fontsize=12)
-#     ax.set_ylabel("Trajectory index" if orientation == "rows=trajectories" else "Time index", fontsize=12)
-#     ax.set_xlim(0, W)
-#     ax.set_ylim(H, 0)
-#     ax.grid(False)
-    
-#     # Title
-#     if title is None:
-#         mode_str = "Simulation" if simulation_mode else "Experimental"
-#         shift_str = " (Shifted)" if shift_data else ""
-#         binary_str = f" (Binary, t={binarization_threshold})" if use_binarization else ""
-#         title = f"Dual-Channel Kymograph - {dataset} ({mode_str}){shift_str}{binary_str}"
-#     ax.set_title(title, fontsize=14, fontweight='bold')
-    
-#     plt.tight_layout()
-    
-#     # ===== SAVE =====
-#     if save_path:
-#         save_path = Path(save_path)
-#         save_path.parent.mkdir(parents=True, exist_ok=True)
-#         fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
-#         if verbose:
-#             print(f"\nSaved kymograph to: {save_path}")
-    
-#     # ===== DISPLAY =====
-#     if show:
-#         plt.show()
-#     else:
-#         plt.close(fig)
-    
-#     if verbose:
-#         print("\nKymograph generation complete")
-#         print("=" * 70)
-    
-#     return img, primary_data, secondary_data
+        if p_max - p_min > 1e-9:
+            primary_trace = (primary_trace - p_min) / (p_max - p_min)
+        if s_max - s_min > 1e-9:
+            secondary_trace = (secondary_trace - s_min) / (s_max - s_min)
+    
+    # Create plot
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    ax.plot(time_array[:len(primary_trace)], primary_trace, 
+            color=colors[0], linewidth=1.5, label=labels[0], alpha=0.9)
+    ax.plot(time_array[:len(secondary_trace)], secondary_trace, 
+            color=colors[1], linewidth=1.5, label=labels[1], alpha=0.9)
+    
+    ax.set_xlabel('Time (s)', fontsize=10)
+    ax.set_ylabel('Normalized Intensity' if normalize else 'Intensity (a.u.)', fontsize=10)
+    ax.set_title(f'Trajectory {trajectory_index}', fontsize=11, fontweight='bold')
+    ax.legend(loc='upper right', fontsize=9)
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # Save if requested
+    if save_plot and results_folder is not None:
+        results_folder = Path(results_folder)
+        results_folder.mkdir(parents=True, exist_ok=True)
+        base_name = f'{dataset_name}_trajectory_{trajectory_index}'
+        fig.savefig(results_folder / f'{base_name}.png', dpi=150, bbox_inches='tight')
+        fig.savefig(results_folder / f'{base_name}.svg', bbox_inches='tight')
+        if verbose:
+            print(f"Saved trajectory plot to: {results_folder / base_name}.[png|svg]")
+    
+    plt.show()
+    
+    return fig, ax
 
 
 
@@ -4800,12 +3541,26 @@ def plot_dual_channel_kymograph(
     plt.tight_layout()
     
     # ===== SAVE =====
+    # Determine save path: explicit save_path takes priority, otherwise use results_folder
+    if save_path is None and results_folder is not None:
+        # Auto-generate filename based on parameters
+        results_folder = Path(results_folder)
+        mode_suffix = '_simulation' if simulation_mode else '_experimental'
+        shift_suffix = '_shifted' if shift_data else ''
+        binary_suffix = f'_binary_t{binarization_threshold}' if use_binarization else ''
+        save_path = results_folder / f'kymograph_{dataset}_ch{primary_channel}_vs_ch{secondary_channel}{mode_suffix}{shift_suffix}{binary_suffix}.png'
+        if verbose:
+            print(f"\nAuto-generated save path from results_folder: {save_path}")
+    
     if save_path:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
+        # Save both PNG and SVG with same base name
+        base_path = save_path.with_suffix('')  # Remove extension
+        fig.savefig(f'{base_path}.png', bbox_inches="tight", dpi=dpi)
+        fig.savefig(f'{base_path}.svg', bbox_inches="tight")
         if verbose:
-            print(f"\nSaved kymograph to: {save_path}")
+            print(f"Saved kymograph to: {base_path}.[png|svg]")
     
     # ===== DISPLAY =====
     if show:

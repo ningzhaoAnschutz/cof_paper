@@ -63,3 +63,10 @@ kk_*
 *.png   
 # ignore json files
 *.json
+# ignore svg files
+*.svg
+# ignore png files
+*.png   
+# ignore csv files
+*.csv
+*kk_old/

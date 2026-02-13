@@ -40,7 +40,7 @@ cof_paper/
 │   │   ├── FRAP_processing_RS.ipynb
 │   │   ├── FRAP_representative_images_RS.ipynb
 │   │   └── frap_plotting_module.py
-│   ├── Harringtonine/            # Harringtonine chase experiments
+│   ├── Inhibitors/               # Inhibitor runoff experiments
 │   ├── autocorrelations/         # Time-course correlation analysis
 │   │   ├── processing_time_courses.ipynb
 │   │   └── cross_correlation_cof.ipynb

@@ -27,15 +27,19 @@ Author: CoF Project Team
 Date: January 2026
 """
 
-import numpy as np
-import pandas as pd
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+from matplotlib.patches import FancyBboxPatch, Rectangle
+import numpy as np
+import pandas as pd
 from scipy.optimize import differential_evolution, minimize
-from pathlib import Path
-import json
-from datetime import datetime
 
 # =============================================================================
 # PARAMETERS
@@ -327,7 +331,7 @@ def load_data(filepath):
         >>> print(f"Found {len(data[6])} cells with 6xGFP")
         >>> print(f"Mean efficiency at 6xGFP: {np.mean(data[6]):.1f}%")
     """
-    import re
+
     
     df = pd.read_excel(filepath, header=None)
     
@@ -880,8 +884,7 @@ def create_onepool_comprehensive_figure(exp_data, result, save_path):
     - Top row: One-Pool model schematic + Model fit + Parameters
     - Bottom row: Time window diagram
     """
-    from matplotlib.patches import FancyBboxPatch
-    from matplotlib.gridspec import GridSpec
+
     
     fig = plt.figure(figsize=(15, 9))
     gs = GridSpec(2, 3, figure=fig, height_ratios=[1, 0.7], 
@@ -1054,8 +1057,7 @@ def create_twopool_comprehensive_figure(exp_data, best, save_path):
     - Top row: Two-Pool model schematic + Model fit + Parameters (like cof_summary_figure)
     - Bottom row: Time window diagram showing dependence on k_elong, k_init
     """
-    from matplotlib.patches import FancyBboxPatch, Rectangle
-    from matplotlib.gridspec import GridSpec
+
     
     fig = plt.figure(figsize=(15, 9))
     # Panel A wider, Panel B same, Panel C narrower
@@ -1394,6 +1396,120 @@ def main():
     print("="*70)
     
     return best
+
+def create_fig4_panel_b(exp_data=None, best=None, save_path=None):
+    """
+    Create Figure 4 Panel B independently: Two-Pool model fit to experimental data.
+    
+    Styling specifications:
+    - Font: Arial
+    - Axis tick labels: size 12
+    - Axis labels: size 14, non-bold
+    - Data points: darkgray
+    - No grid
+    - Complete box (all 4 spines visible)
+    - Saves as both SVG and PNG
+    
+    Args:
+        exp_data: Experimental data dict. If None, loads from default Excel file.
+        best: Best-fit results dict. If None, runs Two-Pool model fit.
+        save_path: Base path for saving (without extension). If None, uses default.
+    
+    Returns:
+        tuple: (exp_data, best) for reuse
+    """
+
+    
+    # Set Arial font globally for this figure
+    plt.rcParams['font.family'] = 'Arial'
+    plt.rcParams['font.size'] = 12
+    
+    # Load data if not provided
+    if exp_data is None:
+        data_file = Path(__file__).parent / 'Dark mCh Cells.xlsx'
+        exp_data = load_data(str(data_file))
+        print(f"Loaded experimental data from: {data_file}")
+    
+    # Fit model if not provided
+    if best is None:
+        print("Fitting Two-Pool model...")
+        best = fit_two_pool(exp_data)
+        print(f"  τ_fold = {best['tau_fold']:.1f} s")
+        print(f"  f_base = {best['f_base']:.2f}")
+        print(f"  f_gain = {best['f_gain']:.2f}")
+        print(f"  χ² = {best['cost']:.2f}")
+    
+    # Default save path
+    if save_path is None:
+        save_path = Path(__file__).parent / 'figures' / 'fig4_panel_b'
+    else:
+        save_path = Path(save_path)
+    
+    # Ensure output directory exists
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(5, 5.5))
+    
+    n_vals = list(range(7))
+    exp_means = [np.mean(exp_data[n]) for n in n_vals]
+    exp_sems = [np.std(exp_data[n])/np.sqrt(len(exp_data[n])) for n in n_vals]
+    preds = [best['predictions'][n] for n in n_vals]
+    
+    # Plot individual data points with jitter - DARKGRAY color
+    for n in range(7):
+        jitter = np.random.normal(0, 0.05, len(exp_data[n]))
+        ax.scatter([n + j for j in jitter], exp_data[n], 
+                   alpha=0.35, color='darkgray', s=18, zorder=1)
+    
+    # Error bars for mean ± SEM
+    ax.errorbar(n_vals, exp_means, yerr=exp_sems, fmt='o', capsize=5, capthick=2, 
+                color='dimgray', markersize=10, label='Data (mean ± SEM)', zorder=3, linewidth=2)
+    
+    # Model predictions
+    ax.scatter(n_vals, preds, color='red', s=200, zorder=4, marker='+', linewidths=3.5,
+               label='Two-Pool Model')
+    
+    # Axis labels - size 16, NOT bold
+    ax.set_xlabel('Number of GFP Domains', fontsize=16, fontweight='normal')
+    ax.set_ylabel('CoF Efficiency (%)', fontsize=16, fontweight='normal')
+    
+    # Tick labels - size 14
+    ax.tick_params(axis='both', which='major', labelsize=14)
+    
+    # Legend
+    ax.legend(loc='lower right', fontsize=10)
+    
+    # Axis limits
+    ax.set_xlim(-0.5, 6.5)
+    ax.set_ylim(0, 85)
+    ax.set_xticks([0, 1, 2, 3, 4, 5, 6])
+    
+    # NO grid
+    ax.grid(False)
+    
+    # COMPLETE BOX - all 4 spines visible
+    ax.spines['top'].set_visible(True)
+    ax.spines['right'].set_visible(True)
+    ax.spines['bottom'].set_visible(True)
+    ax.spines['left'].set_visible(True)
+    
+    plt.tight_layout()
+    
+    # Save as PNG
+    png_path = str(save_path) + '.png'
+    plt.savefig(png_path, dpi=300, bbox_inches='tight', facecolor='white')
+    print(f"Saved: {png_path}")
+    
+    # Save as SVG
+    svg_path = str(save_path) + '.svg'
+    plt.savefig(svg_path, format='svg', bbox_inches='tight', facecolor='white')
+    print(f"Saved: {svg_path}")
+    
+    plt.close()
+    
+    return exp_data, best
+
 
 if __name__ == '__main__':
     main()
