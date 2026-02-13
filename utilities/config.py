@@ -6,29 +6,32 @@ across notebooks and ensure consistency.
 """
 
 # Full descriptive name mapping for reporter plasmids
+# ⚠️ Key order determines default plotting order via plasmid_order
 REPORTER_PLASMID_NAME_MAPPING = {
     # sfGFP series (co-translational folding)
-    'pNZ212': '6sGFP',           # 6x sfGFP, 0x mCh
-    'pRS026': '5sGFP-1mCh',      # 5x sfGFP, 1x mCh
-    'pRS027': '4sGFP-2mCh',      # 4x sfGFP, 2x mCh
-    'pRS028': '3sGFP',           # 3x sfGFP, 0x mCh (NO mCherry!)
-    'pRS029': '3sGFP-3mCh',      # 3x sfGFP, 3x mCh
-    'pRS030': '2sGFP-4mCh',      # 2x sfGFP, 4x mCh
-    'pRS031': '1sGFP-5mCh',      # 1x sfGFP, 5x mCh
-    'pNZ381': '6mCh',            # 0x sfGFP, 6x mCh
-    
+    'pNZ212': '6sfGFP',           # 6x sfGFP, 0x mCh
+    'pRS026': '5sfGFP-1mCh',      # 5x sfGFP, 1x mCh
+    'pRS027': '4sfGFP-2mCh',      # 4x sfGFP, 2x mCh
+    'pRS028': '3sfGFP',           # 3x sfGFP, 0x mCh (NO mCherry!)
+    'pRS029': '3sfGFP-3mCh',      # 3x sfGFP, 3x mCh
+    'pRS030': '2sfGFP-4mCh',      # 2x sfGFP, 4x mCh
+    'pRS031': '1sfGFP-5mCh',      # 1x sfGFP, 5x mCh
+
     # mGFPuv series (slow folding GFP)
     'pNZ370': '6uvGFP',          # 6x mGFPuv, 0x mCh
     'pRS032': '4uvGFP-2mCh',     # 4x mGFPuv, 2x mCh
-    
+
     # XBP1 variants - C-terminal XBP1(S255A)
-    'pRS038': '4sGFP-2mCh-Xbp1',    # 4x sfGFP, 2x mCh, Xbp1(S255A) at C-term
+    'pRS038': '4sfGFP-2mCh-Xbp1',    # 4x sfGFP, 2x mCh, Xbp1(S255A) at C-term
     'pRS039': '4uvGFP-2mCh-Xbp1',   # 4x mGFPuv, 2x mCh, Xbp1(S255A) at C-term
-    
+
     # XBP1 variants - N-terminal XBP1(S255A)
-    'pRS048': 'Xbp1-4sGFP-2mCh',    # Xbp1(S255A) at N-term, 4x sfGFP, 2x mCh
+    'pRS048': 'Xbp1-4sfGFP-2mCh',    # Xbp1(S255A) at N-term, 4x sfGFP, 2x mCh
     'pRS049': 'Xbp1-4uvGFP-2mCh',   # Xbp1(S255A) at N-term, 4x mGFPuv, 2x mCh
-    
+
+    # mCherry-only control (always plotted last)
+    'pNZ381': '6mCh',            # 0x sfGFP, 6x mCh
+
     # Reporter plasmid (Halo-based detection)
     # 'pRS012': 'Halo-reporter',      # piggybac-Tet-on-anti-HAfb-Halo-IRES-LaG16-tdStayGold
 }
@@ -42,11 +45,11 @@ PLASMID_SHORT_NAME_MAPPING = {
     'pRS029': '3sf',   # 3 sfGFP copies
     'pRS030': '2sf',   # 2 sfGFP copies
     'pRS031': '1sf',   # 1 sfGFP copy
-    'pNZ381': '0sf',   # 0 sfGFP copies
     'pNZ370': '6uv',   # 6 uvGFP copies
     'pRS032': '4uv',   # 4 uvGFP copies
     'pRS038': '4sf-Xbp1',   # 4 sfGFP + Xbp1
     'pRS039': '4uv-Xbp1',   # 4 uvGFP + Xbp1
     'pRS048': 'Xbp1-4sf',   # Xbp1 + 4 sfGFP
     'pRS049': 'Xbp1-4uv',   # Xbp1 + 4 uvGFP
+    'pNZ381': '0sf',   # 0 sfGFP copies (mCh-only control)
 }
