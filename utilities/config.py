@@ -18,16 +18,16 @@ REPORTER_PLASMID_NAME_MAPPING = {
     'pRS031': '1sfGFP-5mCh',      # 1x sfGFP, 5x mCh
 
     # mGFPuv series (slow folding GFP)
-    'pNZ370': '6uvGFP',          # 6x mGFPuv, 0x mCh
-    'pRS032': '4uvGFP-2mCh',     # 4x mGFPuv, 2x mCh
+    'pNZ370': '6GFPuv',          # 6x mGFPuv, 0x mCh
+    'pRS032': '4GFPuv-2mCh',     # 4x mGFPuv, 2x mCh
 
     # XBP1 variants - C-terminal XBP1(S255A)
     'pRS038': '4sfGFP-2mCh-Xbp1',    # 4x sfGFP, 2x mCh, Xbp1(S255A) at C-term
-    'pRS039': '4uvGFP-2mCh-Xbp1',   # 4x mGFPuv, 2x mCh, Xbp1(S255A) at C-term
+    'pRS039': '4GFPuv-2mCh-Xbp1',   # 4x mGFPuv, 2x mCh, Xbp1(S255A) at C-term
 
     # XBP1 variants - N-terminal XBP1(S255A)
     'pRS048': 'Xbp1-4sfGFP-2mCh',    # Xbp1(S255A) at N-term, 4x sfGFP, 2x mCh
-    'pRS049': 'Xbp1-4uvGFP-2mCh',   # Xbp1(S255A) at N-term, 4x mGFPuv, 2x mCh
+    'pRS049': 'Xbp1-4GFPuv-2mCh',   # Xbp1(S255A) at N-term, 4x mGFPuv, 2x mCh
 
     # mCherry-only control (always plotted last)
     'pNZ381': '6mCh',            # 0x sfGFP, 6x mCh
