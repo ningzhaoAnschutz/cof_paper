@@ -465,7 +465,7 @@ def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_di
     if max_frame < 10:
         if verbose:
             print('No dataframes found with frame number greater than 10 frames.')
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
     full_frames = np.arange(0, max_frame)
     frame_indices = np.arange(0, max_frame, frame_rate_min)  # Frame indices for processing
