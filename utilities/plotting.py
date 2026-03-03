@@ -10,6 +10,7 @@ This module provides visualization functions for:
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import seaborn as sns
