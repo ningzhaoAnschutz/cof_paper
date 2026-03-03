@@ -149,6 +149,8 @@ def run_simulation_and_generate_data(gene_sequence_path, ki, ke_global=5, step_s
     return SSA_HA, SSA_GFP
 
 
+
+
 def extract_intensity_and_shift_data(dataframe, selected_field='spot_int_ch_0', 
                                      min_percentage_data_in_trajectory=0.4, 
                                      padd_with_nans=True, maximum_columns=360, 
@@ -243,7 +245,8 @@ def extract_intensity_and_shift_data(dataframe, selected_field='spot_int_ch_0',
         if verbose:
             print(f"WARNING: No trajectories survived quality filtering")
         return np.array([]).reshape(0, maximum_columns)
-    
+
+
     # Smoothing and forward fill
     if smooth_window > 1:
         try:
@@ -485,6 +488,27 @@ def extract_dual_channel_data(dataframe, primary_field, secondary_field,
     return primary_shifted, secondary_shifted
 
 
+def _find_tracking_files(root_folder: Path, dataframe_prefix: str = 'tracking_') -> list:
+    """Return a sorted list of tracking CSV Paths from all results_* subfolders.
+
+    Shared helper used by load_tracking_data, load_dual_channel_tracking_data,
+    and extract_intensity_distributions to avoid triplicating the same scan logic.
+    """
+    if not root_folder.is_dir():
+        raise NotADirectoryError(f"Not a directory: {root_folder}")
+    subfolders = [f for f in root_folder.iterdir()
+                  if f.is_dir() and 'results_' in f.name]
+    if not subfolders:
+        raise ValueError(f"No results_* subfolders found in {root_folder}")
+    return sorted([
+        fp for sf in subfolders
+        for fp in sf.iterdir()
+        if dataframe_prefix in fp.name
+        and fp.suffix.lower() == '.csv'
+        and not fp.name.startswith('._')   # skip macOS resource-fork files
+    ])
+
+
 def load_tracking_data(root_folder: Path, selected_field: str, 
                       min_percentage_data_in_trajectory=0.3, dataframe_prefix='tracking_',
                       min_snr=1, max_missing_frames=5, smooth_window=1, verbose=True):
@@ -518,34 +542,20 @@ def load_tracking_data(root_folder: Path, selected_field: str,
         Number of cells (files) processed
     total_number_of_spots : int
         Total number of trajectories
+    cell_id_per_trajectory : ndarray
+        1-D integer array (length = total_number_of_spots) mapping each
+        trajectory row to its source cell index (0-based).  Use together
+        with ``mi.Correlation.keep_mask_`` to count post-filter cells.
     """
     # Validation
     if not root_folder.exists():
         raise FileNotFoundError(f"root_folder does not exist: {root_folder}")
-    
-    if not root_folder.is_dir():
-        raise NotADirectoryError(f"root_folder is not a directory: {root_folder}")
-    
-    # Get subfolders with 'results_' in the name
-    subfolders = [folder for folder in root_folder.iterdir() 
-                  if folder.is_dir() and 'results_' in folder.name]
-    
-    if not subfolders:
-        raise ValueError(f"No subfolders with 'results_' found in {root_folder}")
-    
-    # Get tracking files from these subfolders
-    tracking_files = [file 
-                      for folder in subfolders 
-                      for file in folder.iterdir() 
-                      if dataframe_prefix in file.name and file.suffix.lower() == '.csv']
-    
-    if not tracking_files:
-        raise ValueError(
-            f"No CSV files with prefix '{dataframe_prefix}' found in results subfolders.\n"
-            f"  Searched in: {len(subfolders)} subfolders under {root_folder}"
-        )
+
+    tracking_files = _find_tracking_files(root_folder, dataframe_prefix)
+
     
     intensity_arrays = []
+    cell_id_arrays  = []   # parallel list: cell index for each trajectory
     number_of_cells = 0
     
     for tracking_file in tracking_files:
@@ -575,6 +585,8 @@ def load_tracking_data(root_folder: Path, selected_field: str,
             
             if intensity_array.shape[0] > 0:
                 intensity_arrays.append(intensity_array)
+                # tag every trajectory in this file with the current cell index
+                cell_id_arrays.append(np.full(intensity_array.shape[0], number_of_cells, dtype=int))
                 number_of_cells += 1
             elif verbose:
                 print(f"SKIP: {tracking_file.name} (no valid trajectories)")
@@ -600,9 +612,10 @@ def load_tracking_data(root_folder: Path, selected_field: str,
         )
     
     concatenated_intensity_arrays = np.concatenate(intensity_arrays, axis=0)
+    cell_id_per_trajectory        = np.concatenate(cell_id_arrays,   axis=0)
     total_number_of_spots = np.shape(concatenated_intensity_arrays)[0]
     
-    return concatenated_intensity_arrays, number_of_cells, total_number_of_spots
+    return concatenated_intensity_arrays, number_of_cells, total_number_of_spots, cell_id_per_trajectory
 
 
 
@@ -767,6 +780,7 @@ def compute_autocorrelation_for_dataset(
                 print(f"Using simulated data:")
                 print(f"  Trajectories: {total_number_of_spots}")
                 print(f"  Timepoints: {SSA_data.shape[1]}")
+            primary_data_cell_ids = None  # no cell concept in simulation
         else:
             # Load experimental data
             folder_with_files, plot_name_data, dataframe_prefix = dataset_selection(
@@ -774,7 +788,8 @@ def compute_autocorrelation_for_dataset(
             )
             
             # Load tracking data for specified channel
-            array_int_all_days, total_number_of_cells, total_number_of_spots = load_tracking_data(
+            (array_int_all_days, total_number_of_cells,
+             total_number_of_spots, primary_data_cell_ids) = load_tracking_data(
                 folder_with_files,
                 selected_field=selected_field + str(channel_index),
                 min_percentage_data_in_trajectory=min_percentage_data_in_trajectory,
@@ -787,8 +802,6 @@ def compute_autocorrelation_for_dataset(
             primary_data = array_int_all_days
         
         # ===== COMMON PROCESSING (both experimental and simulation) =====
-        
-        # Handle downsampling
         if downsample:
             primary_data = mi.Utilities().downsample_array(
                 primary_data, factor=downsampling_factor, method='average'
@@ -804,11 +817,11 @@ def compute_autocorrelation_for_dataset(
             print("Computing autocorrelation...")
         
         with joblib.parallel_backend('threading', n_jobs=1):
-            mean_correlation, std_correlation, lags, correlations_array, dwell_time = mi.Correlation(
+            corr_obj = mi.Correlation(
                 primary_data=primary_data,
                 max_lag=max_lag,
-                nan_handling='forward_fill',
-                shift_data=True if not simulation_mode else False,  # Don't shift simulated data
+                nan_handling='ignore',   # 'forward_fill' biases the mean: last value repeats into NaN-padded tail
+                shift_data=False,        # data already shifted upstream by extract_intensity_and_shift_data
                 return_full=False,
                 time_interval_between_frames_in_seconds=step_size_in_sec_downsampled,
                 use_bootstrap=True,
@@ -840,7 +853,8 @@ def compute_autocorrelation_for_dataset(
                 line_color_fit=line_color_fit,
                 plot_name=plot_name,
                 figsize=figsize,
-            ).run()
+            )
+            mean_correlation, std_correlation, lags, correlations_array, dwell_time = corr_obj.run()
         
         # Create results DataFrame
         df = pd.DataFrame(data={
@@ -848,9 +862,15 @@ def compute_autocorrelation_for_dataset(
             'mean_correlation': mean_correlation,
             'std_correlation': std_correlation
         })
-        
+
+        # Compute post-filter cell count using the outlier mask exposed by mi.Correlation
         number_of_trajectories_final = np.shape(correlations_array)[0]
-        
+        if primary_data_cell_ids is not None and hasattr(corr_obj, 'keep_mask_'):
+            surviving_cell_ids = primary_data_cell_ids[corr_obj.keep_mask_]
+            number_of_cells_final = int(np.unique(surviving_cell_ids).size)
+        else:
+            number_of_cells_final = total_number_of_cells  # simulation: no subset possible
+
         # ===== SAVE RESULTS =====
         if save_results and results_folder is not None:
             # Construct filename
@@ -885,7 +905,7 @@ def compute_autocorrelation_for_dataset(
         # Print summary
         #if verbose:
         print(f'Number of trajectories: {number_of_trajectories_final}')
-        print(f'Number of cells: {total_number_of_cells}')
+        print(f'Number of cells (post-filter): {number_of_cells_final}')
         #    print(f'Data source: {"Simulation" if simulation_mode else "Experimental"}')
         #    print('-----------------------------------------------------\n')
         
@@ -899,6 +919,8 @@ def compute_autocorrelation_for_dataset(
             'total_number_of_cells': total_number_of_cells,
             'total_number_of_spots': total_number_of_spots,
             'number_of_trajectories_final': number_of_trajectories_final,
+            'number_of_cells_final': number_of_cells_final,   # post-filter cell count
+            'fit_params_': getattr(corr_obj, 'fit_params_', None),  # exact A, tau_c, C from curve_fit
             'plot_name': plot_name_data,
             'df': df,
             'dataset': ds,
@@ -979,28 +1001,9 @@ def load_dual_channel_tracking_data(
     # Validation
     if not root_folder.exists():
         raise FileNotFoundError(f"root_folder does not exist: {root_folder}")
-    
-    if not root_folder.is_dir():
-        raise NotADirectoryError(f"root_folder is not a directory: {root_folder}")
-    
-    # Get tracking files
-    subfolders = [folder for folder in root_folder.iterdir() 
-                  if folder.is_dir() and 'results_' in folder.name]
-    
-    if not subfolders:
-        raise ValueError(f"No subfolders with 'results_' found in {root_folder}")
-    
-    tracking_files = [file 
-                      for folder in subfolders 
-                      for file in folder.iterdir() 
-                      if dataframe_prefix in file.name and file.suffix.lower() == '.csv']
-    
-    if not tracking_files:
-        raise ValueError(
-            f"No CSV files with prefix '{dataframe_prefix}' found in results subfolders.\n"
-            f"  Searched in: {len(subfolders)} subfolders under {root_folder}"
-        )
-    
+
+    tracking_files = _find_tracking_files(root_folder, dataframe_prefix)
+
     primary_arrays = []
     secondary_arrays = []
     total_files_processed = 0
@@ -1133,9 +1136,10 @@ def compute_cross_correlation_for_dataset(
     shift_data=True,
     nan_handling='forward_fill',
     # Simulation mode parameters
-    simulation_mode=False,  # NEW: Enable simulation mode
-    SSA_data_1=None,  # NEW: Primary channel simulated data (n_trajectories, n_timepoints)
-    SSA_data_2=None,  # NEW: Secondary channel simulated data (n_trajectories, n_timepoints)
+    simulation_mode=False,
+    SSA_data_1=None,
+    SSA_data_2=None,
+    detrend=True,
 ):
     """
     Compute cross-correlation function (CCF) for experimental or simulated dual-channel data.
@@ -1366,7 +1370,8 @@ def compute_cross_correlation_for_dataset(
                 y_axes_min_max_list_values=y_axes_min_max_list_values,
                 x_axes_min_max_list_values=x_axes_min_max_list_values,
                 multi_tau=False,  # Typically False for CCF
-                plot_title=f"{'[SIM] ' if simulation_mode else ''}{plot_name}"
+                plot_title=f"{'[SIM] ' if simulation_mode else ''}{plot_name}",
+                detrend=detrend,
             ).run()
         
         # Create results DataFrame
@@ -2872,18 +2877,26 @@ def plot_dual_signal_trajectories(
     # Apply smoothing if requested
     if smooth_window > 1:
         from scipy.ndimage import uniform_filter1d
-        # Forward-fill NaNs before smoothing
-        primary_finite = np.where(np.isfinite(primary_trace))[0]
-        secondary_finite = np.where(np.isfinite(secondary_trace))[0]
-        
-        if len(primary_finite) > 0:
-            primary_trace = np.interp(np.arange(len(primary_trace)), primary_finite, primary_trace[primary_finite])
-            primary_trace = uniform_filter1d(primary_trace, size=smooth_window, mode='nearest')
-        
-        if len(secondary_finite) > 0:
-            secondary_trace = np.interp(np.arange(len(secondary_trace)), secondary_finite, secondary_trace[secondary_finite])
-            secondary_trace = uniform_filter1d(secondary_trace, size=smooth_window, mode='nearest')
-    
+
+        def _smooth_preserve_nans(trace, window):
+            """Interpolate *only within* the valid range, smooth, then restore
+            NaNs outside [first_valid, last_valid] so trailing frames stay blank."""
+            finite_idx = np.where(np.isfinite(trace))[0]
+            if len(finite_idx) < 2:
+                return trace  # nothing to smooth
+            first, last = finite_idx[0], finite_idx[-1]
+            # Interpolate internal NaNs only (no extrapolation beyond last valid frame)
+            all_idx = np.arange(first, last + 1)
+            interp_vals = np.interp(all_idx, finite_idx, trace[finite_idx])
+            smoothed = uniform_filter1d(interp_vals, size=window, mode='nearest')
+            # Write back into a NaN array — positions outside [first, last] stay NaN
+            out = np.full_like(trace, np.nan)
+            out[first:last + 1] = smoothed
+            return out
+
+        primary_trace = _smooth_preserve_nans(primary_trace, smooth_window)
+        secondary_trace = _smooth_preserve_nans(secondary_trace, smooth_window)
+
     # Normalize if requested
     if normalize:
         p_min, p_max = np.nanmin(primary_trace), np.nanmax(primary_trace)
@@ -3576,3 +3589,252 @@ def plot_dual_channel_kymograph(
 
 
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INTENSITY DISTRIBUTION ANALYSIS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def extract_intensity_distributions(
+    data_folder: Path,
+    dataset: str = 'cof',
+    selected_field: str = 'spot_int_ch_',
+    channel_index: int = 1,
+    snr_field: str = 'snr_ch_',
+    min_snr: float = 0.5,
+    timepoint_frame: int = None,   # for mode 3; None → uses median occupied frame
+    control_spots_mode: bool = False,
+    dataframe_prefix: str = 'tracking_',
+    verbose: bool = True,
+):
+    """
+    Extract intensity distributions from tracking CSVs in three complementary modes.
+
+    Parameters
+    ----------
+    data_folder : Path
+        Root folder that contains results_* subfolders with tracking CSVs.
+    dataset : str
+        Dataset selection key (passed to dataset_selection).
+    selected_field : str
+        Column prefix for intensity, e.g. 'spot_int_ch_'.
+    channel_index : int
+        Channel number appended to selected_field (1-based).
+    snr_field : str
+        Column prefix for SNR, e.g. 'snr_ch_'.
+    min_snr : float
+        Minimum SNR to keep a data point.
+    timepoint_frame : int or None
+        Frame index used for mode 3.  None → median of all occupied frames.
+    control_spots_mode : bool
+        Passed to dataset_selection.
+    dataframe_prefix : str
+        Prefix for tracking CSV filenames.
+    verbose : bool
+
+    Returns
+    -------
+    dict with keys
+        'mean_per_particle'   : 1-D array  — one value per particle (mode 1)
+        'all_timepoints'      : 1-D array  — every (particle × frame) value (mode 2)
+        'at_timepoint'        : 1-D array  — values at chosen frame (mode 3)
+        'timepoint_frame_used': int        — frame index actually used for mode 3
+        'n_cells'             : int
+        'n_particles'         : int        — unique particles that passed SNR filter
+        'cell_ids'            : list       — which cell each particle belongs to (mode 1)
+    """
+    # ── resolve folder ────────────────────────────────────────────────────────
+    folder_with_files, _, _ = dataset_selection(
+        dataset, data_folder, control_spots_mode, downsample=False
+    )
+    int_col = selected_field + str(channel_index)
+    snr_col = snr_field + str(channel_index)
+
+    tracking_files = _find_tracking_files(folder_with_files, dataframe_prefix)
+
+    # accumulators
+    mean_per_particle   = []   # mode 1
+    all_particle_series = []   # mode 1 — Series per cell, indexed by global particle key
+    all_timepoints      = []   # mode 2
+    at_timepoint_vals   = []   # mode 3
+    cell_ids_out        = []   # cell tag per particle (mode 1)
+    all_frames          = []   # track occupied frames for auto timepoint
+    cached_dfs          = []   # filtered DataFrames cached here; reused for mode 3
+    n_cells = 0
+    n_particles_total = 0
+
+    for cell_idx, fp in enumerate(tracking_files):
+        try:
+            df = pd.read_csv(fp)
+            if df.empty or int_col not in df.columns:
+                continue
+
+            # optional SNR filter
+            if snr_col in df.columns:
+                df = df[df[snr_col] >= min_snr].copy()
+            df = df[df[int_col].notna() & (df[int_col] > 0)].copy()
+            if df.empty:
+                continue
+
+            cached_dfs.append(df)   # cache for mode 3 — avoids second disk read
+            n_cells += 1
+            all_frames.extend(df['frame'].tolist())
+
+            # ── Mode 1: mean intensity per particle ───────────────────────────
+            particle_series = (
+                df.groupby('particle')[int_col]
+                  .mean()                    # Series: index=particle_id, values=mean intensity
+            )
+            particle_series_tagged = particle_series.copy()
+            particle_series_tagged.index = [
+                f"{cell_idx}_{pid}" for pid in particle_series.index
+            ]  # unique global particle key = cell_idx + particle_id
+            mean_per_particle.extend(particle_series.values.tolist())
+            cell_ids_out.extend([cell_idx] * len(particle_series))
+            n_particles_total += len(particle_series)
+            all_particle_series.append(particle_series_tagged)
+
+            # ── Mode 2: all (particle × frame) as independent samples ─────────
+            all_timepoints.extend(df[int_col].tolist())
+
+        except Exception as e:
+            if verbose:
+                print(f"  SKIP {fp.name}: {e}")
+            continue
+
+    if not mean_per_particle:
+        raise ValueError("No valid intensity data found.")
+
+    # ── Mode 3: particles at a specific time point ────────────────────────────
+    # Reuse cached_dfs — no second disk read needed.
+    if timepoint_frame is None:
+        timepoint_frame = int(np.median(all_frames))
+    if verbose:
+        print(f"  Mode 3: using frame {timepoint_frame}  "
+              f"(pass timepoint_frame= to override)")
+
+    for df in cached_dfs:
+        df_t = df[df['frame'] == timepoint_frame].copy()
+        df_t = df_t[df_t[int_col].notna() & (df_t[int_col] > 0)]
+        at_timepoint_vals.extend(df_t[int_col].tolist())
+
+    result = {
+        'mean_per_particle'       : np.array(mean_per_particle),
+        'mean_per_particle_series': pd.concat(all_particle_series) if all_particle_series else pd.Series(dtype=float),
+        'all_timepoints'          : np.array(all_timepoints),
+        'at_timepoint'            : np.array(at_timepoint_vals),
+        'timepoint_frame_used'    : timepoint_frame,
+        'n_cells'                 : n_cells,
+        'n_particles'             : n_particles_total,
+        'cell_ids'                : cell_ids_out,
+    }
+    if verbose:
+        print(f"  Cells: {n_cells}  |  Particles: {n_particles_total}  "
+              f"|  Mode-2 points: {len(all_timepoints)}  "
+              f"|  Mode-3 points (frame {timepoint_frame}): {len(at_timepoint_vals)}")
+    return result
+
+
+def plot_intensity_distributions(
+    dist_results: list,
+    list_names: list,
+    list_colors: list,
+    channel_index: int = 1,
+    mode: int = None,          # 1, 2, or 3 → single panel. None → original 3-panel
+    x_label: str = 'Intensity (a.u.)',
+    figsize_single: tuple = (5, 4),
+    figsize_triple: tuple = (14, 4.5),
+    figsize: tuple = None,     # backward-compatible alias for figsize_triple
+    bins: int = 60,
+    kde: bool = True,
+    xlim: tuple = None,
+    save_name: str = 'intensity_distributions_ch',
+    show: bool = True,
+):
+    """
+    Plot intensity distributions.
+
+    Parameters
+    ----------
+    dist_results : list of dicts from extract_intensity_distributions
+    list_names   : dataset labels
+    list_colors  : one colour per dataset
+    mode         : 1=mean per particle, 2=all timepoints, 3=snapshot at frame.
+                   None → three-panel figure (original behaviour).
+    x_label      : x-axis label (only used in single-mode plot)
+    """
+    from scipy.stats import gaussian_kde
+
+    _mode_map = {
+        1: 'mean_per_particle',
+        2: 'all_timepoints',
+        3: 'at_timepoint',
+    }
+
+    def _plot_one(ax, key):
+        for r, name, color in zip(dist_results, list_names, list_colors):
+            vals = r[key]
+            vals = vals[np.isfinite(vals) & (vals > 0)]
+            if vals.size == 0:
+                continue
+            if kde and vals.size > 3:
+                xs = np.linspace(vals.min(), vals.max(), 500)
+                try:
+                    ys = gaussian_kde(vals, bw_method='scott')(xs)
+                    ax.plot(xs, ys, color=color, linewidth=1.8, label=name)
+                    ax.fill_between(xs, ys, alpha=0.12, color=color)
+                except Exception:
+                    ax.hist(vals, bins=bins, density=True, color=color,
+                            alpha=0.35, label=name)
+            else:
+                ax.hist(vals, bins=bins, density=True, color=color,
+                        alpha=0.35, label=name)
+            ax.axvline(np.median(vals), color=color, linewidth=1.0,
+                       linestyle='--', alpha=0.7)
+        ax.legend(fontsize=7, framealpha=0.85)
+        ax.grid(True, alpha=0.2, linewidth=0.4)
+        if xlim is not None:
+            ax.set_xlim(xlim)
+
+    # ── Single-mode (one panel) ───────────────────────────────────────────────
+    if mode is not None:
+        if mode not in _mode_map:
+            raise ValueError(f"mode must be 1, 2 or 3, got {mode}")
+        key = _mode_map[mode]
+        fig, ax = plt.subplots(figsize=figsize_single)
+        _plot_one(ax, key)
+        ax.set_xlabel(x_label, fontsize=10)
+        ax.set_ylabel('Density', fontsize=10)
+        plt.tight_layout()
+        suffix = f'_mode{mode}'
+
+    # ── Three-panel (original) ────────────────────────────────────────────────
+    else:
+        _titles = [
+            ('mean_per_particle', 'Mean intensity per particle\n(one value per trajectory)'),
+            ('all_timepoints',    'All observations\n(every particle × frame)'),
+            ('at_timepoint',      'Snapshot\n(particles at median frame)'),
+        ]
+        fig, axes = plt.subplots(1, 3, figsize=figsize or figsize_triple, sharey=False)
+        fig.suptitle(f'Intensity Distributions — Channel {channel_index}',
+                     fontsize=13, fontweight='bold', y=1.01)
+        for ax, (key, title) in zip(axes, _titles):
+            _plot_one(ax, key)
+            ax.set_title(title, fontsize=10)
+            ax.set_xlabel('Intensity (a.u.)', fontsize=9)
+            ax.set_ylabel('Density', fontsize=9)
+        suffix = ''
+
+    svg_path = f'{save_name}{channel_index}{suffix}.svg'
+    png_path = f'{save_name}{channel_index}{suffix}.png'
+    plt.savefig(svg_path, dpi=300, bbox_inches='tight')
+    plt.savefig(png_path, dpi=300, bbox_inches='tight')
+    if show:
+        plt.show()
+        plt.close(fig)
+        print(f'Saved: {svg_path} / {png_path}')
+        return None   # returning fig causes Jupyter to re-render it; None prevents double plot
+    else:
+        plt.close(fig)
+        print(f'Saved: {svg_path} / {png_path}')
+        return fig
