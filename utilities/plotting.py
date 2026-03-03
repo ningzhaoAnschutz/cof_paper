@@ -239,7 +239,7 @@ def plot_efficiency_vs_intensity_scatter(
 
 
 def plot_efficiency_vs_intensity_scatter_means(
-    data_dict, condition_labels, x_label="Mean Spot Intensity (Ch0)", y_label="CoF Efficiency (%)",
+    data_dict, condition_labels, intensity_key='int_ch_0', x_label="Mean Spot Intensity (Ch0)", y_label="CoF Efficiency (%)",
     title="", figsize=(8, 6), tick_size=12, marker_size=150, show_individual_cells=False,
     individual_cell_alpha=0.3, individual_cell_size=20, save_dir=None, plot_name='efficiency_vs_intensity_means',show_legend=False,
 ):
@@ -252,7 +252,7 @@ def plot_efficiency_vs_intensity_scatter_means(
     all_mean_int, all_mean_eff = [], []
     
     for cond_idx, label in enumerate(condition_labels):
-        int_data = data_dict['int_ch_0'][cond_idx]
+        int_data = data_dict[intensity_key][cond_idx]
         eff_data = data_dict['efficiency_ml'][cond_idx]
         if int_data is None or eff_data is None:
             continue
@@ -322,7 +322,7 @@ def confidence_ellipse(x, y, ax, n_std=2.0, **kwargs):
     ax.add_patch(ellipse)
 
 def plot_efficiency_vs_intensity_kde(
-    data_dict, condition_labels, x_label="Spot Intensity", y_label="CoF Efficiency (%)",
+    data_dict, condition_labels, intensity_key='int_ch_0', x_label="Spot Intensity", y_label="CoF Efficiency (%)",
     title="", figsize=(8, 6), tick_size=12, marker_size=20, marker_alpha=0.5, kde_alpha =0.12,
     show_condition_means=False, mean_marker_size=100, show_marginals=False,
     show_kde=True, show_ellipse=False, ellipse_std=2.0,
@@ -391,7 +391,7 @@ def plot_efficiency_vs_intensity_kde(
     condition_means = []
 
     for cond_idx, label in enumerate(condition_labels):
-        int_data = data_dict['int_ch_0'][cond_idx]
+        int_data = data_dict[intensity_key][cond_idx]
         eff_data = data_dict['efficiency_ml'][cond_idx]
         if int_data is None or eff_data is None:
             continue
