@@ -38,6 +38,7 @@ from .plotting import (
     plot_swarm_plot_efficiency,
     plot_efficiency_vs_intensity_scatter,
     plot_efficiency_vs_intensity_scatter_means,
+    plot_efficiency_vs_intensity_kde,
 )
 from .metadata import extract_laser_intensities
 
@@ -60,6 +61,7 @@ __all__ = [
     'plot_swarm_plot_efficiency',
     'plot_efficiency_vs_intensity_scatter',
     'plot_efficiency_vs_intensity_scatter_means',
+    'plot_efficiency_vs_intensity_kde',
     # Metadata functions
     'extract_laser_intensities',
 ]
