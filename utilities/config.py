@@ -20,6 +20,10 @@ REPORTER_PLASMID_NAME_MAPPING = {
     # mGFPuv series (slow folding GFP)
     'pNZ370': '6GFPuv',          # 6x mGFPuv, 0x mCh
     'pRS032': '4GFPuv-2mCh',     # 4x mGFPuv, 2x mCh
+    'pNZ396': '3GFPuv-3mCh',     # 3x mGFPuv, 3x mCh
+    'pNZ389': '2GFPuv-4mCh',     # 2x mGFPuv, 4x mCh
+    'pNZ388': '1GFPuv-5mCh',     # 1x mGFPuv, 5x mCh
+
 
     # XBP1 variants - C-terminal XBP1(S255A)
     'pRS038': '4sfGFP-2mCh-Xbp1',    # 4x sfGFP, 2x mCh, Xbp1(S255A) at C-term
@@ -45,11 +49,14 @@ PLASMID_SHORT_NAME_MAPPING = {
     'pRS029': '3sf',   # 3 sfGFP copies
     'pRS030': '2sf',   # 2 sfGFP copies
     'pRS031': '1sf',   # 1 sfGFP copy
-    'pNZ370': '6uv',   # 6 uvGFP copies
-    'pRS032': '4uv',   # 4 uvGFP copies
+    'pNZ370': '6uv',   # 6 GFPuv copies
+    'pRS032': '4uv',   # 4 GFPuv copies
+    'pNZ396': '3uv',   # 3 GFPuv copies
+    'pNZ389': '2uv',   # 2 GFPuv copies
+    'pNZ388': '1uv',   # 1 GFPuv copy
     'pRS038': '4sf-Xbp1',   # 4 sfGFP + Xbp1
-    'pRS039': '4uv-Xbp1',   # 4 uvGFP + Xbp1
+    'pRS039': '4uv-Xbp1',   # 4 GFPuv + Xbp1
     'pRS048': 'Xbp1-4sf',   # Xbp1 + 4 sfGFP
-    'pRS049': 'Xbp1-4uv',   # Xbp1 + 4 uvGFP
+    'pRS049': 'Xbp1-4uv',   # Xbp1 + 4 GFPuv
     'pNZ381': '0sf',   # 0 sfGFP copies (mCh-only control)
 }

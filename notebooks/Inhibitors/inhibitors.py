@@ -277,7 +277,7 @@ def plot_multiple_inhibitors(full_frames_list,
         If True, draw horizontal threshold & vertical τ lines when fitting.
     """
     # Prepare output folder
-    results_folder = Path(results_folder or Path('.')).joinpath(f"results_{plot_name}")
+    #results_folder = Path(results_folder or Path('.')).joinpath(f"results_{plot_name}")
     results_folder.mkdir(parents=True, exist_ok=True)
 
     # Set up figure
@@ -380,6 +380,8 @@ def plot_multiple_inhibitors(full_frames_list,
 
     # Save & show
     plt.savefig(results_folder.joinpath(f'HT_{plot_name}.png'), dpi=600)
+    #save svg
+    plt.savefig(results_folder.joinpath(f'HT_{plot_name}.svg'), dpi=600)
     plt.show()
 
 
