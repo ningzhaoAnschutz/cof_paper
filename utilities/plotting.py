@@ -239,7 +239,7 @@ def plot_efficiency_vs_intensity_scatter(
 def plot_efficiency_vs_intensity_scatter_means(
     data_dict, condition_labels, x_label="Mean Spot Intensity (Ch0)", y_label="CoF Efficiency (%)",
     title="", figsize=(8, 6), tick_size=12, marker_size=150, show_individual_cells=False,
-    individual_cell_alpha=0.3, individual_cell_size=20, save_dir=None, plot_name='efficiency_vs_intensity_means',
+    individual_cell_alpha=0.3, individual_cell_size=20, save_dir=None, plot_name='efficiency_vs_intensity_means',show_legend=False,
 ):
     """Create scatter plot of per-condition means with 2D error bars."""
     sns.set_style("ticks")
@@ -290,11 +290,12 @@ def plot_efficiency_vs_intensity_scatter_means(
     ax.set_ylabel(y_label, fontsize=tick_size + 4, fontname="Arial", color='black')
     ax.set_title(title, fontsize=tick_size + 4, fontname="Arial", color='black')
     ax.tick_params(labelsize=tick_size + 4)
-    ax.legend(loc='lower right', fontsize=tick_size, frameon=True, facecolor='white', edgecolor='black')
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-        spine.set_linewidth(1.5)
-    plt.tight_layout()
+    if show_legend:
+        ax.legend(loc='lower right', fontsize=tick_size, frameon=True, facecolor='white', edgecolor='black')
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.5)
+        plt.tight_layout()
     
     if save_dir is not None:
         save_dir = Path(save_dir)
