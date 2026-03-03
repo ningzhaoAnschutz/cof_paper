@@ -241,14 +241,14 @@ def plot_efficiency_vs_intensity_scatter(
 def plot_efficiency_vs_intensity_scatter_means(
     data_dict, condition_labels, intensity_key='int_ch_0', x_label="Mean Spot Intensity (Ch0)", y_label="CoF Efficiency (%)",
     title="", figsize=(8, 6), tick_size=12, marker_size=150, show_individual_cells=False,
-    individual_cell_alpha=0.3, individual_cell_size=20, save_dir=None, plot_name='efficiency_vs_intensity_means',show_legend=False,
+    individual_cell_alpha=0.3, individual_cell_size=20, colors=None, save_dir=None, plot_name='efficiency_vs_intensity_means',show_legend=False,
 ):
     """Create scatter plot of per-condition means with 2D error bars."""
     sns.set_style("ticks")
     fig, ax = plt.subplots(figsize=figsize, facecolor='white')
     ax.set_facecolor('white')
-    
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#17becf', '#bcbd22', '#7f7f7f']
+    if colors is None:
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#17becf', '#bcbd22', '#7f7f7f']
     all_mean_int, all_mean_eff = [], []
     
     for cond_idx, label in enumerate(condition_labels):
@@ -326,7 +326,7 @@ def plot_efficiency_vs_intensity_kde(
     title="", figsize=(8, 6), tick_size=12, marker_size=20, marker_alpha=0.5, kde_alpha =0.12,
     show_condition_means=False, mean_marker_size=100, show_marginals=False,
     show_kde=True, show_ellipse=False, ellipse_std=2.0,
-    show_regression=False, x_lim =None, y_lim = None, 
+    show_regression=False, x_lim =None, y_lim = None, colors=None,
     marginal_kws=None, save_dir=None, plot_name='efficiency_vs_intensity_hexbin',
 ):
     """Create joint scatter plot with marginal distributions, colored per condition.
@@ -382,8 +382,9 @@ def plot_efficiency_vs_intensity_kde(
     mpl.rcParams['xtick.color'] = 'black'
     mpl.rcParams['ytick.color'] = 'black'
 
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-              '#8c564b', '#e377c2', '#17becf', '#bcbd22', '#7f7f7f']
+    if colors is None:
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                  '#8c564b', '#e377c2', '#17becf', '#bcbd22', '#7f7f7f']
     markers = ['o', 's', '^', 'D', 'v', 'P', 'X', '*', 'h', '<']
 
     # --- Collect per-cell data, separated by condition ---
@@ -465,13 +466,13 @@ def plot_efficiency_vs_intensity_kde(
                 markeredgecolor='white', markeredgewidth=1, zorder=10,
             )
 
-    # --- Linear regression across all pooled data ---
+    # --- Linear regression across condition means ---
     if show_regression:
-        all_int = np.concatenate([x for x, y, l, c, m in condition_data])
-        all_eff = np.concatenate([y for x, y, l, c, m in condition_data])
-        if len(all_int) >= 2:
-            slope, intercept, r_value, p_value, _ = stats.linregress(all_int, all_eff)
-            x_line = np.linspace(all_int.min(), all_int.max(), 100)
+        if len(condition_means) >= 2:
+            all_mean_int = [m[0] for m in condition_means]
+            all_mean_eff = [m[2] for m in condition_means]
+            slope, intercept, r_value, p_value, _ = stats.linregress(all_mean_int, all_mean_eff)
+            x_line = np.linspace(min(all_mean_int), max(all_mean_int), 100)
             ax.plot(x_line, slope * x_line + intercept, 'k--', lw=1.5, alpha=0.7)
             ax.text(
                 0.05, 0.95, f'R² = {r_value**2:.3f}\np = {p_value:.2e}',
