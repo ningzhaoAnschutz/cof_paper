@@ -240,7 +240,7 @@ def plot_efficiency_vs_intensity_scatter(
 
 def plot_efficiency_vs_intensity_scatter_means(
     data_dict, condition_labels, intensity_key='int_ch_0', x_label="Mean Spot Intensity (Ch0)", y_label="CoF Efficiency (%)",
-    title="", figsize=(8, 6), tick_size=12, marker_size=150, show_individual_cells=False,
+    title="", figsize=(8, 6), tick_size=12, marker_size=150, show_individual_cells=False, show_regression_line=True, x_lim=None, y_lim=None,    
     individual_cell_alpha=0.3, individual_cell_size=20, colors=None, save_dir=None, plot_name='efficiency_vs_intensity_means',show_legend=False,
 ):
     """Create scatter plot of per-condition means with 2D error bars."""
@@ -280,11 +280,12 @@ def plot_efficiency_vs_intensity_scatter_means(
                    markersize=np.sqrt(marker_size), capsize=5, capthick=2.5, elinewidth=2.5, label=label,
                    markeredgecolor='white', markeredgewidth=1, zorder=10)
     
-    if len(all_mean_int) >= 2:
-        slope, intercept, r_value, p_value, _ = stats.linregress(all_mean_int, all_mean_eff)
-        x_line = np.linspace(min(all_mean_int), max(all_mean_int), 100)
-        ax.plot(x_line, slope * x_line + intercept, 'k--', lw=1.5, alpha=0.7)
-        ax.text(0.05, 0.95, f'R² = {r_value**2:.3f}\np = {p_value:.2e}', transform=ax.transAxes,
+    if show_regression_line:
+        if len(all_mean_int) >= 2:
+            slope, intercept, r_value, p_value, _ = stats.linregress(all_mean_int, all_mean_eff)
+            x_line = np.linspace(min(all_mean_int), max(all_mean_int), 100)
+            ax.plot(x_line, slope * x_line + intercept, 'k--', lw=1.5, alpha=0.7)
+            ax.text(0.05, 0.95, f'R² = {r_value**2:.3f}\np = {p_value:.2e}', transform=ax.transAxes,
                 fontsize=tick_size + 2, va='top', fontname="Arial",
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='black'))
     
@@ -292,6 +293,12 @@ def plot_efficiency_vs_intensity_scatter_means(
     ax.set_ylabel(y_label, fontsize=tick_size + 4, fontname="Arial", color='black')
     ax.set_title(title, fontsize=tick_size + 4, fontname="Arial", color='black')
     ax.tick_params(labelsize=tick_size + 4)
+    # define x and y limits
+    if x_lim is not None:
+        ax.set_xlim(x_lim)
+    if y_lim is not None:
+        ax.set_ylim(y_lim)
+    
     if show_legend:
         ax.legend(loc='lower right', fontsize=tick_size, frameon=True, facecolor='white', edgecolor='black')
         for spine in ax.spines.values():
