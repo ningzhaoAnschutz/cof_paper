@@ -278,7 +278,7 @@ def plot_efficiency_vs_intensity_scatter_means(
         
         ax.errorbar(mean_int, mean_eff, xerr=sem_int, yerr=sem_eff, fmt='o', color=colors[cond_idx % len(colors)],
                    markersize=np.sqrt(marker_size), capsize=5, capthick=2.5, elinewidth=2.5, label=label,
-                   markeredgecolor='white', markeredgewidth=1, zorder=2)
+                   markeredgecolor='white', markeredgewidth=1, zorder=10)
     
     if len(all_mean_int) >= 2:
         slope, intercept, r_value, p_value, _ = stats.linregress(all_mean_int, all_mean_eff)

@@ -9,6 +9,7 @@ Modules:
     - data_loading: Functions for loading and aggregating MicroLive tracking data
     - plotting: Visualization functions for swarm plots, efficiency plots, etc.
     - metadata: Functions for extracting microscopy file metadata (LIF, etc.)
+    - export_to_excel: Functions for exporting efficiency data to Excel format
 
 Example usage:
     from utilities import config, data_loading, plotting
@@ -24,6 +25,7 @@ from . import config
 from . import data_loading
 from . import plotting
 from . import metadata
+from . import export_to_excel
 
 # Convenience re-exports for common items
 from .config import REPORTER_PLASMID_NAME_MAPPING, PLASMID_SHORT_NAME_MAPPING
@@ -41,6 +43,7 @@ from .plotting import (
     plot_efficiency_vs_intensity_kde,
 )
 from .metadata import extract_laser_intensities
+from .export_to_excel import export_efficiency_to_excel
 
 __all__ = [
     # Modules
@@ -64,4 +67,6 @@ __all__ = [
     'plot_efficiency_vs_intensity_kde',
     # Metadata functions
     'extract_laser_intensities',
+    # Export functions
+    'export_efficiency_to_excel',
 ]
