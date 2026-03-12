@@ -39,7 +39,7 @@
 \maketitle
 
 \begin{abstract}
-We develop kinetic models to explain co-translational protein folding as measured by the coTFT (Co-Translational Folding Tracking) technology. The experimental system uses tandem GFP domains fused to an smHA tag, where folding is detected by intrabody binding to folded GFP. A key observation is that co-translational folding efficiency increases from 40\% (1$\times$GFP) to 67\% (6$\times$GFP), plateauing at $\sim$3--4 copies. We test the \textbf{time constraint hypothesis}: later-synthesized domains have insufficient time to fold before translation terminates. We compare two models: (1) a \textbf{One-Pool model} (1 parameter) assuming all nascent chains can fold, and (2) a \textbf{Two-Pool model} (3 parameters) assuming nascent chains comprise two populations: one capable of folding and one that is not. The One-Pool model fails, predicting decreasing efficiency. The Two-Pool model successfully reproduces the data with $\kfold = 0.013$ s$^{-1}$ ($\taufold \approx 78$s), a baseline foldable fraction $f_{\text{base}} = 42\%$, and an avidity gain of $f_{\text{gain}} = 12\%$ per additional domain. The biological implications suggest that nascent chain populations are inherently heterogeneous, with only $\sim$42\% capable of productively folding during translation. Adding more GFP domains provides additional ``chances'' for successful folding, explaining the saturation behavior at 3--4 copies.
+We develop kinetic models to explain co-translational protein folding as measured by the coTFT (Co-Translational Folding Tracking) technology. The experimental system uses tandem GFP domains fused to an smHA tag, where folding is detected by intrabody binding to folded GFP. A key observation is that co-translational folding efficiency increases from 32\% (1$\times$GFP) to 67\% (6$\times$GFP), plateauing at $\sim$3--4 copies. We test the \textbf{time constraint hypothesis}: later-synthesized domains have insufficient time to fold before translation terminates. We compare two models: (1) a \textbf{One-Pool model} (1 parameter) assuming all nascent chains can fold, and (2) a \textbf{Two-Pool model} (3 parameters) assuming nascent chains comprise two populations: one capable of folding and one that is not. The One-Pool model fails, predicting decreasing efficiency. The Two-Pool model successfully reproduces the data with $\kfold = 0.014$ s$^{-1}$ ($\taufold \approx 71$s), a baseline foldable fraction $f_{\text{base}} = 37\%$, and an avidity gain of $f_{\text{gain}} = 14\%$ per additional domain. The biological implications suggest that nascent chain populations are inherently heterogeneous, with only $\sim$37\% capable of productively folding during translation. Adding more GFP domains provides additional ``chances'' for successful folding, explaining the saturation behavior at 3--4 copies.
 \end{abstract}
 
 % Table of contents removed for cleaner document
@@ -70,18 +70,17 @@ Co-translational folding (CoF) efficiency is measured using single-molecule micr
 \toprule
 \textbf{$n_{\text{GFP}}$} & \textbf{Mean (\%)}& \textbf{SEM (\%)} & \textbf{$N$ (cells)} \\
 \midrule
-0 & 2.3 & 0.2 & 15 \\
-1 & 40.0 & 2.4 & 17 \\
-2 & 49.8 & 2.5 & 20 \\
-3 & 62.1 & 2.4 & 19 \\
-4 & 66.7 & 1.8 & 20 \\
-5 & 65.6 & 1.8 & 19 \\
-6 & 66.6 & 1.8 & 16 \\
+1 & 31.7 & 2.4 & 31 \\
+2 & 46.7 & 2.9 & 32 \\
+3 & 65.1 & 2.0 & 30 \\
+4 & 69.4 & 1.7 & 32 \\
+5 & 67.8 & 2.1 & 31 \\
+6 & 67.3 & 1.7 & 36 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The data reveal a characteristic saturation behavior: CoF efficiency increases from 40\% (1$\times$GFP) to $\sim$66\% (4$\times$GFP), then plateaus at $\sim$66\% for constructs with 4--6 GFP domains. The 6$\times$mCherry control shows only $\sim$2.3\% (non-specific colocalization). At 67\% efficiency with 6 GFP domains, approximately $6 \times 0.67 \approx 4$ copies are detected as folded on average, suggesting a physical limit on the number of detectable domains.
+The data reveal a characteristic saturation behavior: CoF efficiency increases from 32\% (1$\times$GFP) to $\sim$69\% (4$\times$GFP), then plateaus at $\sim$67--69\% for constructs with 4--6 GFP domains. At 67\% efficiency with 6 GFP domains, approximately $6 \times 0.67 \approx 4$ copies are detected as folded on average, suggesting a physical limit on the number of detectable domains.
 
 %==============================================================================
 \section{Physical Parameters and Time Windows}
@@ -296,21 +295,21 @@ Using the optimization method described in Section~\ref{sec:parameter_estimation
 \toprule
 \textbf{Parameter} & \textbf{Value} & \textbf{Units} & \textbf{Interpretation} \\
 \midrule
-$\kfold$ & 0.0057 & s$^{-1}$ & GFP folding rate ($\taufold = 175$ s) \\
+$\kfold$ & 0.0059 & s$^{-1}$ & GFP folding rate ($\taufold = 171$ s) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Observing Fig. \ref{fig:onepool_solution}, the One-Pool model fails as it predicts efficiency should decrease while the data shows an increase (40\% $\to$ 67\%).
+Observing Fig. \ref{fig:onepool_solution}, the One-Pool model fails as it predicts efficiency should decrease while the data shows an increase (32\% $\to$ 67\%).
 
 \begin{tcolorbox}[colback=gray!10, colframe=gray!50, arc=2mm, boxrule=0.5pt]
-\textbf{Worked Example (3$\times$GFP):} Using the fitted $\kfold = 0.0057$ s$^{-1}$ ($\taufold = 175$s) and time windows from Table~\ref{tab:emergence}: $\Delta t_1 = 248$s, $\Delta t_2 = 197$s, $\Delta t_3 = 147$s. The folded fractions are:
+\textbf{Worked Example (3$\times$GFP):} Using the fitted $\kfold = 0.0059$ s$^{-1}$ ($\taufold = 171$s) and time windows from Table~\ref{tab:emergence}: $\Delta t_1 = 248$s, $\Delta t_2 = 197$s, $\Delta t_3 = 147$s. The folded fractions are:
 \begin{align*}
-F(\Delta t_1) &= 1 - e^{-0.0057 \times 248} = 0.76 \quad (76\%) \\
-F(\Delta t_2) &= 1 - e^{-0.0057 \times 197} = 0.68 \quad (68\%) \\
-F(\Delta t_3) &= 1 - e^{-0.0057 \times 147} = 0.57 \quad (57\%)
+F(\Delta t_1) &= 1 - e^{-0.0059 \times 248} = 0.77 \quad (77\%) \\
+F(\Delta t_2) &= 1 - e^{-0.0059 \times 197} = 0.69 \quad (69\%) \\
+F(\Delta t_3) &= 1 - e^{-0.0059 \times 147} = 0.58 \quad (58\%)
 \end{align*}
-Applying Eq.~\ref{eq:onepool_efficiency}: $\text{CoF}(3) = \frac{100}{3}(0.76 + 0.68 + 0.57) = 67\%$. The experimental value is 62\%, but critically, the model predicts higher efficiency for 1$\times$GFP (76\%) than for 3$\times$GFP (67\%).
+Applying Eq.~\ref{eq:onepool_efficiency}: $\text{CoF}(3) = \frac{100}{3}(0.77 + 0.69 + 0.58) = 68\%$. The experimental value is 65\%, but critically, the model predicts higher efficiency for 1$\times$GFP (77\%) than for 3$\times$GFP (68\%).
 \end{tcolorbox}
 
 \begin{figure}[H]
@@ -319,7 +318,7 @@ Applying Eq.~\ref{eq:onepool_efficiency}: $\text{CoF}(3) = \frac{100}{3}(0.76 + 
 \caption{\textbf{One-Pool Model: Pure Kinetics Fails.} 
 (A) Model fit shows the One-Pool model predicts decreasing efficiency with more domains, opposite to the experimental trend.
 (B) Schematic of the One-Pool model assuming all nascent chains are competent for folding.
-(C) Fitted parameter: $\kfold = 0.0057$ s$^{-1}$ ($\taufold = 175$ s).
+(C) Fitted parameter: $\kfold = 0.0059$ s$^{-1}$ ($\taufold = 171$ s).
 (D) Translation timeline showing the time windows for folding for each GFP domain.}
 \label{fig:onepool_solution}
 \end{figure}
@@ -328,7 +327,7 @@ Applying Eq.~\ref{eq:onepool_efficiency}: $\text{CoF}(3) = \frac{100}{3}(0.76 + 
 \centering
 \includegraphics[width=0.3\textwidth]{../modeling/figures/fig3_onepool_parameters.png}
 \caption{\textbf{One-Pool Model: Parameter Sensitivity.} 
-Sensitivity of $\chi^2$ (weighted MSE) to $\tau_{\text{fold}}$ (30--250s). The dotted line marks the best-fit $\tau_{\text{fold}} = 175$s that minimizes $\chi^2$. }
+Sensitivity of $\chi^2$ (weighted MSE) to $\tau_{\text{fold}}$ (30--250s). The dotted line marks the best-fit $\tau_{\text{fold}} = 171$s that minimizes $\chi^2$. }
 \label{fig:onepool_params}
 \end{figure}
 
@@ -357,25 +356,25 @@ The fitted parameters and their physical interpretation are summarized in Table~
 \toprule
 \textbf{Parameter} & \textbf{Value} & \textbf{Units} & \textbf{Interpretation} \\
 \midrule
-$\kfold$ & 0.013 & s$^{-1}$ & GFP folding rate ($\taufold = 78$ s) \\
-$f_{\text{base}}$ & 0.42 & --- & Baseline foldable fraction (42\%) \\
-$f_{\text{gain}}$ & 0.12 & per domain & Increase per additional GFP \\
+$\kfold$ & 0.014 & s$^{-1}$ & GFP folding rate ($\taufold = 71$ s) \\
+$f_{\text{base}}$ & 0.37 & --- & Baseline foldable fraction (37\%) \\
+$f_{\text{gain}}$ & 0.14 & per domain & Increase per additional GFP \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{tcolorbox}[colback=gray!10, colframe=gray!50, arc=2mm, boxrule=0.5pt]
-\textbf{Worked Example (3$\times$GFP):} Using fitted parameters $\kfold = 0.013$ s$^{-1}$, $f_{\text{base}} = 0.42$, and $f_{\text{gain}} = 0.12$. First, calculate the effective foldable fraction:
+\textbf{Worked Example (3$\times$GFP):} Using fitted parameters $\kfold = 0.014$ s$^{-1}$, $f_{\text{base}} = 0.37$, and $f_{\text{gain}} = 0.14$. First, calculate the effective foldable fraction:
 \[
-f_{\text{eff}}(3) = \min(1, 0.42 + 0.12 \times (3-1)) = \min(1, 0.66) = 0.66 \quad (66\%)
+f_{\text{eff}}(3) = \min(1, 0.37 + 0.14 \times (3-1)) = \min(1, 0.65) = 0.65 \quad (65\%)
 \]
 Next, calculate folded fractions using Eq.~\ref{eq:folded_termination} with time windows $\Delta t_1 = 248$s, $\Delta t_2 = 197$s, $\Delta t_3 = 147$s:
 \begin{align*}
-F(\Delta t_1) &= 1 - e^{-0.013 \times 248} = 0.96 \quad (96\%) \\
-F(\Delta t_2) &= 1 - e^{-0.013 \times 197} = 0.92 \quad (92\%) \\
-F(\Delta t_3) &= 1 - e^{-0.013 \times 147} = 0.85 \quad (85\%)
+F(\Delta t_1) &= 1 - e^{-0.014 \times 248} = 0.97 \quad (97\%) \\
+F(\Delta t_2) &= 1 - e^{-0.014 \times 197} = 0.94 \quad (94\%) \\
+F(\Delta t_3) &= 1 - e^{-0.014 \times 147} = 0.87 \quad (87\%)
 \end{align*}
-Applying Eq.~\ref{eq:twopool_efficiency}: $\text{CoF}(3) = 0.66 \times \frac{100}{3}(0.96 + 0.92 + 0.85) = 0.66 \times 91\% = 60\%$. This closely matches the experimental value of 62\%.
+Applying Eq.~\ref{eq:twopool_efficiency}: $\text{CoF}(3) = 0.65 \times \frac{100}{3}(0.97 + 0.94 + 0.87) = 0.65 \times 93\% = 60\%$. This closely matches the experimental value of 65\%.
 \end{tcolorbox}
 
 \begin{figure}[H]
@@ -384,7 +383,7 @@ Applying Eq.~\ref{eq:twopool_efficiency}: $\text{CoF}(3) = 0.66 \times \frac{100
 \caption{\textbf{Two-Pool Model:} 
 (A) Model fit shows agreement with experimental data, correctly predicting the increasing efficiency trend.
 (B) Schematic of the Two-Pool model with foldable and non-foldable populations.
-(C) Fitted parameters: $\kfold = 0.013$ s$^{-1}$ ($\taufold = 78$ s), $f_{\text{base}} = 0.42$, $f_{\text{gain}} = 0.12$.
+(C) Fitted parameters: $\kfold = 0.014$ s$^{-1}$ ($\taufold = 71$ s), $f_{\text{base}} = 0.37$, $f_{\text{gain}} = 0.14$.
 (D) Translation timeline showing the time windows for folding for each GFP domain.}
 \label{fig:twopool_solution}
 \end{figure}
@@ -431,7 +430,7 @@ We use differential evolution, a global optimization algorithm suitable for non-
 \section{Conclusions}
 %==============================================================================
 
-The Two-Pool model explains the saturation behavior by proposing that only $\sim$42\% of nascent chains are initially competent for co-translational folding, with each additional GFP domain increasing this fraction by $\sim$12\% (avidity effect). The fitted folding rate $\kfold = 0.013$ s$^{-1}$ ($\taufold \approx 78$s) is consistent with in vitro GFP folding kinetics. The time constraint hypothesis explains why later GFP domains contribute less to the signal: they have progressively shorter time windows before translation terminates and the polysome disassembles, leaving insufficient time to complete the folding process.
+The Two-Pool model explains the saturation behavior by proposing that only $\sim$37\% of nascent chains are initially competent for co-translational folding, with each additional GFP domain increasing this fraction by $\sim$14\% (avidity effect). The fitted folding rate $\kfold = 0.014$ s$^{-1}$ ($\taufold \approx 71$s) is consistent with in vitro GFP folding kinetics. The time constraint hypothesis explains why later GFP domains contribute less to the signal: they have progressively shorter time windows before translation terminates and the polysome disassembles, leaving insufficient time to complete the folding process.
 
 \textbf{Simplifying assumptions.} Translation termination is modeled as instantaneous at the stop codon, and only folding completed before ribosome release contributes to the measured signal. All GFP domains are assumed to fold with identical rate constants ($\kfold$), and intrabody binding to folded GFP is assumed to be fast relative to folding (not rate-limiting). The model uses time-averaged polysome parameters rather than stochastic simulation of individual ribosome dynamics.
 

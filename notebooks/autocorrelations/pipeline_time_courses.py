@@ -55,6 +55,8 @@ from scipy.ndimage import uniform_filter1d
 import matplotlib.pyplot as plt
 from scipy.signal import peak_widths
 from scipy.ndimage import gaussian_filter1d
+from scipy.stats import gaussian_kde
+
 
 
 def dataset_selection(plot_name, data_folder, control_spots_mode=False, downsample=False):
@@ -664,7 +666,7 @@ def compute_autocorrelation_for_dataset(
     baseline_weight_by_pairs = True,
     line_color='blue',
     line_color_fit='red',
-    figsize=(8, 6)
+    figsize=(8, 6),
 ):
     """
     Compute autocorrelation function (ACF) for experimental or simulated data.
@@ -3735,16 +3737,119 @@ def extract_intensity_distributions(
     return result
 
 
+# def plot_intensity_distributions(
+#     dist_results: list,
+#     list_names: list,
+#     list_colors: list,
+#     channel_index: int = 1,
+#     mode: int = None,          # 1, 2, or 3 → single panel. None → original 3-panel
+#     x_label: str = 'Intensity (a.u.)',
+#     figsize_single: tuple = (5, 4),
+#     figsize_triple: tuple = (14, 4.5),
+#     figsize: tuple = None,     # backward-compatible alias for figsize_triple
+#     bins: int = 60,
+#     kde: bool = True,
+#     xlim: tuple = None,
+#     save_name: str = 'intensity_distributions_ch',
+#     show: bool = True,
+# ):
+#     """
+#     Plot intensity distributions.
+
+#     Parameters
+#     ----------
+#     dist_results : list of dicts from extract_intensity_distributions
+#     list_names   : dataset labels
+#     list_colors  : one colour per dataset
+#     mode         : 1=mean per particle, 2=all timepoints, 3=snapshot at frame.
+#                    None → three-panel figure (original behaviour).
+#     x_label      : x-axis label (only used in single-mode plot)
+#     """
+
+#     _mode_map = {
+#         1: 'mean_per_particle',
+#         2: 'all_timepoints',
+#         3: 'at_timepoint',
+#     }
+
+#     def _plot_one(ax, key):
+#         for r, name, color in zip(dist_results, list_names, list_colors):
+#             vals = r[key]
+#             vals = vals[np.isfinite(vals) & (vals > 0)]
+#             if vals.size == 0:
+#                 continue
+#             if kde and vals.size > 3:
+#                 xs = np.linspace(vals.min(), vals.max(), 500)
+#                 try:
+#                     ys = gaussian_kde(vals, bw_method='scott')(xs)
+#                     ax.plot(xs, ys, color=color, linewidth=1.8, label=name)
+#                     ax.fill_between(xs, ys, alpha=0.12, color=color)
+#                 except Exception:
+#                     ax.hist(vals, bins=bins, density=True, color=color,
+#                             alpha=0.35, label=name)
+#             else:
+#                 ax.hist(vals, bins=bins, density=True, color=color,
+#                         alpha=0.35, label=name)
+#             ax.axvline(np.median(vals), color=color, linewidth=1.0,
+#                        linestyle='--', alpha=0.7)
+#         #ax.legend(fontsize=7, framealpha=0.85)
+#         ax.legend(fontsize=12, framealpha=0.85,
+#           loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=len(list_names))
+#         ax.grid(True, alpha=0.2, linewidth=0.4)
+#         if xlim is not None:
+#             ax.set_xlim(xlim)
+
+#     # ── Single-mode (one panel) ───────────────────────────────────────────────
+#     if mode is not None:
+#         if mode not in _mode_map:
+#             raise ValueError(f"mode must be 1, 2 or 3, got {mode}")
+#         key = _mode_map[mode]
+#         fig, ax = plt.subplots(figsize=figsize_single)
+#         _plot_one(ax, key)
+#         ax.set_xlabel(x_label, fontsize=16)
+#         ax.set_ylabel('Probability Density', fontsize=16)
+#         plt.tight_layout()
+#         suffix = f'_mode{mode}'
+
+#     # ── Three-panel (original) ────────────────────────────────────────────────
+#     else:
+#         _titles = [
+#             ('mean_per_particle', 'Mean intensity per particle\n(one value per trajectory)'),
+#             ('all_timepoints',    'All observations\n(every particle × frame)'),
+#             ('at_timepoint',      'Snapshot\n(particles at median frame)'),
+#         ]
+#         fig, axes = plt.subplots(1, 3, figsize=figsize or figsize_triple, sharey=False)
+#         #fig.suptitle(f'Intensity Distributions — Channel {channel_index}',
+#         #             fontsize=13, fontweight='bold', y=1.01)
+#         for ax, (key, title) in zip(axes, _titles):
+#             _plot_one(ax, key)
+#             #ax.set_title(title, fontsize=14)
+#             ax.set_xlabel('Intensity (a.u.)', fontsize=16)
+#             ax.set_ylabel('Probability Density', fontsize=16)
+#         suffix = ''
+
+#     svg_path = f'{save_name}{channel_index}{suffix}.svg'
+#     png_path = f'{save_name}{channel_index}{suffix}.png'
+#     plt.savefig(svg_path, dpi=300, bbox_inches='tight')
+#     plt.savefig(png_path, dpi=300, bbox_inches='tight')
+#     if show:
+#         plt.show()
+#         plt.close(fig)
+#         print(f'Saved: {svg_path} / {png_path}')
+#         return None   # returning fig causes Jupyter to re-render it; None prevents double plot
+#     else:
+#         plt.close(fig)
+#         print(f'Saved: {svg_path} / {png_path}')
+#         return fig
+
 def plot_intensity_distributions(
     dist_results: list,
     list_names: list,
     list_colors: list,
     channel_index: int = 1,
-    mode: int = None,          # 1, 2, or 3 → single panel. None → original 3-panel
-    x_label: str = 'Intensity (a.u.)',
-    figsize_single: tuple = (5, 4),
-    figsize_triple: tuple = (14, 4.5),
-    figsize: tuple = None,     # backward-compatible alias for figsize_triple
+    mode: int = 1,
+    x_label: str = 'PSF Amplitude (a.u.)',
+    figsize: tuple = (5, 5),
     bins: int = 60,
     kde: bool = True,
     xlim: tuple = None,
@@ -3752,89 +3857,62 @@ def plot_intensity_distributions(
     show: bool = True,
 ):
     """
-    Plot intensity distributions.
+    Plot intensity distributions as a single panel.
 
     Parameters
     ----------
     dist_results : list of dicts from extract_intensity_distributions
     list_names   : dataset labels
     list_colors  : one colour per dataset
-    mode         : 1=mean per particle, 2=all timepoints, 3=snapshot at frame.
-                   None → three-panel figure (original behaviour).
-    x_label      : x-axis label (only used in single-mode plot)
+    mode         : 1=mean per particle, 2=all timepoints, 3=snapshot at frame
+    x_label      : x-axis label
     """
-    from scipy.stats import gaussian_kde
-
     _mode_map = {
         1: 'mean_per_particle',
         2: 'all_timepoints',
         3: 'at_timepoint',
     }
+    if mode not in _mode_map:
+        raise ValueError(f"mode must be 1, 2 or 3, got {mode}")
 
-    def _plot_one(ax, key):
-        for r, name, color in zip(dist_results, list_names, list_colors):
-            vals = r[key]
-            vals = vals[np.isfinite(vals) & (vals > 0)]
-            if vals.size == 0:
-                continue
-            if kde and vals.size > 3:
-                xs = np.linspace(vals.min(), vals.max(), 500)
-                try:
-                    ys = gaussian_kde(vals, bw_method='scott')(xs)
-                    ax.plot(xs, ys, color=color, linewidth=1.8, label=name)
-                    ax.fill_between(xs, ys, alpha=0.12, color=color)
-                except Exception:
-                    ax.hist(vals, bins=bins, density=True, color=color,
-                            alpha=0.35, label=name)
-            else:
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for r, name, color in zip(dist_results, list_names, list_colors):
+        vals = r[_mode_map[mode]]
+        vals = vals[np.isfinite(vals) & (vals > 0)]
+        if vals.size == 0:
+            continue
+        if kde and vals.size > 3:
+            xs = np.linspace(vals.min(), vals.max(), 500)
+            try:
+                ys = gaussian_kde(vals, bw_method='scott')(xs)
+                ax.plot(xs, ys, color=color, linewidth=1.8, label=name)
+                ax.fill_between(xs, ys, alpha=0.12, color=color)
+            except Exception:
                 ax.hist(vals, bins=bins, density=True, color=color,
                         alpha=0.35, label=name)
-            ax.axvline(np.median(vals), color=color, linewidth=1.0,
-                       linestyle='--', alpha=0.7)
-        ax.legend(fontsize=7, framealpha=0.85)
-        ax.grid(True, alpha=0.2, linewidth=0.4)
-        if xlim is not None:
-            ax.set_xlim(xlim)
+        else:
+            ax.hist(vals, bins=bins, density=True, color=color,
+                    alpha=0.35, label=name)
+        ax.axvline(np.median(vals), color=color, linewidth=1.0,
+                   linestyle='--', alpha=0.7)
 
-    # ── Single-mode (one panel) ───────────────────────────────────────────────
-    if mode is not None:
-        if mode not in _mode_map:
-            raise ValueError(f"mode must be 1, 2 or 3, got {mode}")
-        key = _mode_map[mode]
-        fig, ax = plt.subplots(figsize=figsize_single)
-        _plot_one(ax, key)
-        ax.set_xlabel(x_label, fontsize=10)
-        ax.set_ylabel('Density', fontsize=10)
-        plt.tight_layout()
-        suffix = f'_mode{mode}'
+    ax.set_xlabel(x_label, fontsize=16)
+    ax.set_ylabel('Probability Density', fontsize=16)
+    ax.tick_params(axis='both', which='major', labelsize=14)
+    ax.legend(fontsize=12, framealpha=0.85,
+              loc='lower center', bbox_to_anchor=(0.5, 1.02),
+              ncol=len(list_names))
+    if xlim is not None:
+        ax.set_xlim(xlim)
 
-    # ── Three-panel (original) ────────────────────────────────────────────────
-    else:
-        _titles = [
-            ('mean_per_particle', 'Mean intensity per particle\n(one value per trajectory)'),
-            ('all_timepoints',    'All observations\n(every particle × frame)'),
-            ('at_timepoint',      'Snapshot\n(particles at median frame)'),
-        ]
-        fig, axes = plt.subplots(1, 3, figsize=figsize or figsize_triple, sharey=False)
-        fig.suptitle(f'Intensity Distributions — Channel {channel_index}',
-                     fontsize=13, fontweight='bold', y=1.01)
-        for ax, (key, title) in zip(axes, _titles):
-            _plot_one(ax, key)
-            ax.set_title(title, fontsize=10)
-            ax.set_xlabel('Intensity (a.u.)', fontsize=9)
-            ax.set_ylabel('Density', fontsize=9)
-        suffix = ''
-
+    plt.tight_layout()
+    suffix = f'_mode{mode}'
     svg_path = f'{save_name}{channel_index}{suffix}.svg'
     png_path = f'{save_name}{channel_index}{suffix}.png'
     plt.savefig(svg_path, dpi=300, bbox_inches='tight')
     plt.savefig(png_path, dpi=300, bbox_inches='tight')
     if show:
         plt.show()
-        plt.close(fig)
-        print(f'Saved: {svg_path} / {png_path}')
-        return None   # returning fig causes Jupyter to re-render it; None prevents double plot
-    else:
-        plt.close(fig)
-        print(f'Saved: {svg_path} / {png_path}')
-        return fig
+    plt.close(fig)
+    print(f'Saved: {svg_path} / {png_path}')

@@ -41,6 +41,28 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import differential_evolution, minimize
 
+# ---------------------------------------------------------------------------
+# Global figure style: Arial, black text, full axis box, white bg, no grid
+# ---------------------------------------------------------------------------
+plt.rcParams.update({
+    'font.family': 'Arial',
+    'font.size': 12,
+    'text.color': 'black',
+    'axes.labelcolor': 'black',
+    'axes.edgecolor': 'black',
+    'xtick.color': 'black',
+    'ytick.color': 'black',
+    'legend.edgecolor': 'black',
+    'axes.spines.top': True,
+    'axes.spines.right': True,
+    'axes.spines.bottom': True,
+    'axes.spines.left': True,
+    'axes.facecolor': 'white',
+    'figure.facecolor': 'white',
+    'savefig.facecolor': 'white',
+    'axes.grid': False,
+})
+
 # =============================================================================
 # PARAMETERS
 # =============================================================================
@@ -312,22 +334,22 @@ def load_data(filepath):
     """Load experimental CoF efficiency data from Excel file.
     
     Parses an Excel file containing co-translational folding efficiency
-    measurements organized by reporter variant. Extracts individual cell
-    measurements for each GFP copy number (0-6).
+    measurements organized by reporter variant. Auto-detects the row layout
+    by searching for the header row containing 'ML 0.5'.
     
     Args:
         filepath: Path to the Excel file containing experimental data.
-            Expected file structure:
-            - Row 3: Reporter variant names (e.g., pUB-RBsmHA-6xsfGFP-24xMS2)
-            - Row 5: Column type headers ("ML 0.5" = individual cell data)
-            - Rows 6+: Individual cell CoF Efficiency values
+            Expected file structure (row indices auto-detected):
+            - Reporter variant row: contains names like pUB-RBsmHA-6xsfGFP-24xMS2
+            - Header row: contains "ML 0.5" column type markers
+            - Data rows: Individual cell CoF Efficiency values
     
     Returns:
         dict: Dictionary mapping n_gfp (0-6) to numpy arrays of efficiency values.
             Example: {0: array([...]), 1: array([...]), ..., 6: array([...])}
     
     Example:
-        >>> data = load_data('Dark mCh Cells.xlsx')
+        >>> data = load_data('Dark_mCh_Cells_new.xlsx')
         >>> print(f"Found {len(data[6])} cells with 6xGFP")
         >>> print(f"Mean efficiency at 6xGFP: {np.mean(data[6]):.1f}%")
     """
@@ -335,18 +357,52 @@ def load_data(filepath):
     
     df = pd.read_excel(filepath, header=None)
     
+    # Auto-detect layout: find the row containing 'ML 0.5'
+    header_row = None
+    for r in range(min(10, df.shape[0])):
+        for c in range(df.shape[1]):
+            val = str(df.iloc[r, c]) if pd.notna(df.iloc[r, c]) else ''
+            if 'ML 0.5' in val:
+                header_row = r
+                break
+        if header_row is not None:
+            break
+    
+    if header_row is None:
+        raise ValueError(f"Could not find 'ML 0.5' header row in {filepath}")
+    
+    # Reporter variant row: scan upward from header_row for the row containing
+    # reporter variant names (contains 'sfGFP' or 'mCh')
+    reporter_row = None
+    for r in range(header_row - 1, -1, -1):
+        for c in range(1, df.shape[1]):
+            val = str(df.iloc[r, c]) if pd.notna(df.iloc[r, c]) else ''
+            if 'sfGFP' in val or 'mCh' in val:
+                reporter_row = r
+                break
+        if reporter_row is not None:
+            break
+    
+    if reporter_row is None:
+        raise ValueError(f"Could not find reporter variant row in {filepath}")
+    
+    data_start_row = header_row + 1
+    
+    print(f"  Auto-detected layout: reporter_row={reporter_row}, "
+          f"header_row={header_row}, data_start={data_start_row}")
+    
     gfp_data = {n: [] for n in range(7)}
     
     for col_idx in range(1, df.shape[1]):
-        # Get column header from row 5
-        header = str(df.iloc[5, col_idx]) if pd.notna(df.iloc[5, col_idx]) else ''
+        # Get column header
+        header = str(df.iloc[header_row, col_idx]) if pd.notna(df.iloc[header_row, col_idx]) else ''
         
         # Only process ML 0.5 columns
         if 'ML 0.5' not in header:
             continue
         
-        # Get reporter variant from row 3
-        reporter = str(df.iloc[3, col_idx]) if pd.notna(df.iloc[3, col_idx]) else ''
+        # Get reporter variant
+        reporter = str(df.iloc[reporter_row, col_idx]) if pd.notna(df.iloc[reporter_row, col_idx]) else ''
         
         # Parse GFP count from reporter variant
         if '6xsfGFP' in reporter:
@@ -366,8 +422,8 @@ def load_data(filepath):
         else:
             continue
         
-        # Extract data from rows 6+ (data starts at row 6 after header cleanup)
-        col_data = df.iloc[6:, col_idx].dropna()
+        # Extract data from data rows
+        col_data = df.iloc[data_start_row:, col_idx].dropna()
         for v in col_data:
             if isinstance(v, (int, float)) and v > 0:
                 gfp_data[n_gfp].append(float(v))
@@ -416,7 +472,7 @@ def fit_two_pool(exp_data):
     """
     model = TwoPoolModel()
     obs = [np.mean(exp_data[n]) for n in range(1, 7)]
-    sem = [np.std(exp_data[n])/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
+    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
     
     def objective(params):
         k_fold = 10**params[0]
@@ -464,7 +520,7 @@ def fit_one_pool(exp_data):
     """
     model = OnePoolModel()
     obs = [np.mean(exp_data[n]) for n in range(1, 7)]
-    sem = [np.std(exp_data[n])/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
+    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
     
     def objective(params):
         k_fold = 10**params[0]
@@ -523,7 +579,7 @@ def twopool_sensitivity_analysis(exp_data, best_params, chi2_threshold=None):
     
     # Get experimental data for χ² calculation
     obs = [np.mean(exp_data[n]) for n in range(1, 7)]
-    sem = [np.std(exp_data[n])/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
+    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
     
     def compute_chi2(k_fold, f_base, f_gain):
         preds = [model.efficiency(n, k_fold, f_base, f_gain) for n in range(1, 7)]
@@ -729,12 +785,11 @@ def create_twopool_sensitivity_figure(sensitivity_results, save_path):
         ax.text(-0.1, 1.1, panel_label, transform=ax.transAxes, fontsize=14, 
                 fontweight='bold', va='bottom', ha='left')
         
-        # Clean up spines
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+
     
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.savefig(save_path.replace('.png', '.svg'), format='svg', bbox_inches='tight', facecolor='white')
     plt.close()
     
     print(f"\nSensitivity figure saved: {save_path}")
@@ -759,7 +814,7 @@ def create_onepool_sensitivity_figure(exp_data, result, save_path):
     
     # Get experimental data for χ² calculation
     obs = [np.mean(exp_data[n]) for n in range(1, 7)]
-    sem = [np.std(exp_data[n])/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
+    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
     
     # Helper function to get predictions using OnePoolModel
     def get_onepool_predictions(k_fold):
@@ -782,9 +837,7 @@ def create_onepool_sensitivity_figure(exp_data, result, save_path):
     ax.set_xlabel('τ_fold (s)', fontsize=12, fontweight='bold')
     ax.set_ylabel('χ² (weighted MSE)', fontsize=12, fontweight='bold')
     ax.set_title('One-Pool Model: τ_fold Sensitivity', fontsize=13, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+
     
     # Add best-fit marker at the minimum
     chi2_at_best = weighted_mse(get_onepool_predictions(result['k_fold']), obs, sem)
@@ -793,6 +846,8 @@ def create_onepool_sensitivity_figure(exp_data, result, save_path):
     
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+    
+    plt.savefig(save_path.replace('.png', '.svg'), format='svg', bbox_inches='tight', facecolor='white')
     plt.close()
     print(f"One-Pool parameter analysis saved: {save_path}")
 
@@ -810,7 +865,7 @@ def create_twopool_parameter_space(exp_data, result, save_path):
     
     # Get experimental data for χ² calculation
     obs = [np.mean(exp_data[n]) for n in range(1, 7)]
-    sem = [np.std(exp_data[n])/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
+    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
     
     # Helper function to get predictions using TwoPoolModel
     def get_twopool_predictions(k_fold, f_base, f_gain):
@@ -836,8 +891,7 @@ def create_twopool_parameter_space(exp_data, result, save_path):
     ax.set_ylabel('f_base', fontsize=11, fontweight='bold')
     ax.set_title('(A) τ_fold vs f_base', fontsize=12, fontweight='bold')
     plt.colorbar(im, ax=ax, label='χ²')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+
     
     # Panel B: tau_fold vs f_gain
     ax = axes[1]
@@ -852,8 +906,7 @@ def create_twopool_parameter_space(exp_data, result, save_path):
     ax.set_ylabel('f_gain', fontsize=11, fontweight='bold')
     ax.set_title('(B) τ_fold vs f_gain', fontsize=12, fontweight='bold')
     plt.colorbar(im, ax=ax, label='χ²')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+
     
     # Panel C: f_base vs f_gain
     ax = axes[2]
@@ -868,12 +921,12 @@ def create_twopool_parameter_space(exp_data, result, save_path):
     ax.set_ylabel('f_gain', fontsize=11, fontweight='bold')
     ax.set_title('(C) f_base vs f_gain', fontsize=12, fontweight='bold')
     plt.colorbar(im, ax=ax, label='χ²')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+
     
     plt.suptitle('Two-Pool Model: Parameter Space Analysis', fontsize=14, fontweight='bold', y=1.02)
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.savefig(save_path.replace('.png', '.svg'), format='svg', bbox_inches='tight', facecolor='white')
     plt.close()
     print(f"Two-Pool parameter space saved: {save_path}")
 
@@ -940,13 +993,13 @@ def create_onepool_comprehensive_figure(exp_data, result, save_path):
     # --- Panel B: Model Fit ---
     ax = fig.add_subplot(gs[0, 1])
     
-    n_vals = list(range(7))
+    n_vals = list(range(1, 7))
     exp_means = [np.mean(exp_data[n]) for n in n_vals]
-    exp_sems = [np.std(exp_data[n])/np.sqrt(len(exp_data[n])) for n in n_vals]
+    exp_sems = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in n_vals]
     preds = [result['predictions'][n] for n in n_vals]
     
     # Gray jittered individual data points
-    for n in range(7):
+    for n in range(1, 7):
         jitter = np.random.normal(0, 0.05, len(exp_data[n]))
         ax.scatter([n + j for j in jitter], exp_data[n], alpha=0.35, color='lightgray', s=18, zorder=1)
     
@@ -959,11 +1012,9 @@ def create_onepool_comprehensive_figure(exp_data, result, save_path):
     ax.set_ylabel('CoF Efficiency (%)', fontsize=12, fontweight='bold')
     ax.set_title('B. Model Fit', fontsize=13, fontweight='bold')
     ax.legend(loc='lower right', fontsize=10)
-    ax.set_xlim(-0.5, 6.5)
+    ax.set_xlim(0.5, 6.5)
     ax.set_ylim(0, 100)
-    ax.grid(True, alpha=0.3)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+
     
     # --- Panel C: Parameters Table ---
     ax = fig.add_subplot(gs[0, 2])
@@ -1047,6 +1098,7 @@ def create_onepool_comprehensive_figure(exp_data, result, save_path):
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.savefig(save_path.replace('.png', '.svg'), format='svg', bbox_inches='tight', facecolor='white')
     plt.close()
     print(f"One-Pool comprehensive figure saved: {save_path}")
 
@@ -1124,12 +1176,12 @@ def create_twopool_comprehensive_figure(exp_data, best, save_path):
     # --- Panel B: Model Fit (WIDER) ---
     ax = fig.add_subplot(gs[0, 1])
     
-    n_vals = list(range(7))
+    n_vals = list(range(1, 7))
     exp_means = [np.mean(exp_data[n]) for n in n_vals]
-    exp_sems = [np.std(exp_data[n])/np.sqrt(len(exp_data[n])) for n in n_vals]
+    exp_sems = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in n_vals]
     preds = [best['predictions'][n] for n in n_vals]
     
-    for n in range(7):
+    for n in range(1, 7):
         jitter = np.random.normal(0, 0.05, len(exp_data[n]))
         ax.scatter([n + j for j in jitter], exp_data[n], alpha=0.35, color='lightgray', s=18, zorder=1)
     
@@ -1142,11 +1194,9 @@ def create_twopool_comprehensive_figure(exp_data, best, save_path):
     ax.set_ylabel('CoF Efficiency (%)', fontsize=12, fontweight='bold')
     ax.set_title('B. Model Fit', fontsize=13, fontweight='bold')
     ax.legend(loc='lower right', fontsize=10)
-    ax.set_xlim(-0.5, 6.5)
-    ax.set_ylim(0, 85)
-    ax.grid(True, alpha=0.3)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+    ax.set_xlim(0.5, 6.5)
+    ax.set_ylim(0, 100)
+
     
     # --- Panel C: Parameters Table ---
     ax = fig.add_subplot(gs[0, 2])
@@ -1237,6 +1287,8 @@ def create_twopool_comprehensive_figure(exp_data, best, save_path):
     
 
     plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.savefig(save_path.replace('.png', '.svg'), format='svg', bbox_inches='tight', facecolor='white')
+    plt.close()
     print(f"Comprehensive figure saved: {save_path}")
     return fig
 
@@ -1272,14 +1324,14 @@ def main():
     for p in range(1, 7):
         print(f"  Position {p}: {params.time_window(p):.0f}s")
     
-    data_path = Path(__file__).parent / "Dark mCh Cells.xlsx"
+    data_path = Path(__file__).parent / "Dark_mCh_Cells_new.xlsx"
     print(f"\nLoading: {data_path}")
     exp_data = load_data(str(data_path))
     
     print("\nExperimental Data:")
     for n in range(7):
         v = exp_data[n]
-        print(f"  {n}xGFP: {np.mean(v):.1f}% ± {np.std(v)/np.sqrt(len(v)):.1f}% (n={len(v)})")
+        print(f"  {n}xGFP: {np.mean(v):.1f}% ± {np.std(v, ddof=1)/np.sqrt(len(v)):.1f}% (n={len(v)})")
     
     # Fit models
     print("\n" + "="*70)
@@ -1352,6 +1404,9 @@ def main():
     # Fig 4: Two-Pool model comprehensive (schematic + fit + params + timeline)
     create_twopool_comprehensive_figure(exp_data, res_pool, str(output_dir / "fig4_twopool_solution.png"))
     
+    # Fig 4 Panel B: Standalone Two-Pool model fit panel
+    create_fig4_panel_b(exp_data, res_pool, str(output_dir / "fig4_panel_b"))
+    
     # Fig 5: Two-Pool parameter space analysis (2x3 grid)
     create_twopool_parameter_space(exp_data, res_pool, str(output_dir / "fig5_twopool_parameter_space.png"))
     
@@ -1421,12 +1476,11 @@ def create_fig4_panel_b(exp_data=None, best=None, save_path=None):
 
     
     # Set Arial font globally for this figure
-    plt.rcParams['font.family'] = 'Arial'
-    plt.rcParams['font.size'] = 12
+    # (Font and style set globally via rcParams at module level)
     
     # Load data if not provided
     if exp_data is None:
-        data_file = Path(__file__).parent / 'Dark mCh Cells.xlsx'
+        data_file = Path(__file__).parent / 'Dark_mCh_Cells_new.xlsx'
         exp_data = load_data(str(data_file))
         print(f"Loaded experimental data from: {data_file}")
     
@@ -1449,15 +1503,15 @@ def create_fig4_panel_b(exp_data=None, best=None, save_path=None):
     save_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Create figure
-    fig, ax = plt.subplots(figsize=(5, 5.5))
+    fig, ax = plt.subplots(figsize=(5, 5))
     
-    n_vals = list(range(7))
+    n_vals = list(range(1, 7))
     exp_means = [np.mean(exp_data[n]) for n in n_vals]
-    exp_sems = [np.std(exp_data[n])/np.sqrt(len(exp_data[n])) for n in n_vals]
+    exp_sems = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in n_vals]
     preds = [best['predictions'][n] for n in n_vals]
     
     # Plot individual data points with jitter - DARKGRAY color
-    for n in range(7):
+    for n in range(1, 7):
         jitter = np.random.normal(0, 0.05, len(exp_data[n]))
         ax.scatter([n + j for j in jitter], exp_data[n], 
                    alpha=0.35, color='darkgray', s=18, zorder=1)
@@ -1477,22 +1531,13 @@ def create_fig4_panel_b(exp_data=None, best=None, save_path=None):
     # Tick labels - size 14
     ax.tick_params(axis='both', which='major', labelsize=14)
     
-    # Legend
-    ax.legend(loc='lower right', fontsize=10)
+    # Legend - placed outside the figure at the top
+    ax.legend(loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=2, fontsize=10, frameon=True)
     
     # Axis limits
-    ax.set_xlim(-0.5, 6.5)
-    ax.set_ylim(0, 85)
-    ax.set_xticks([0, 1, 2, 3, 4, 5, 6])
-    
-    # NO grid
-    ax.grid(False)
-    
-    # COMPLETE BOX - all 4 spines visible
-    ax.spines['top'].set_visible(True)
-    ax.spines['right'].set_visible(True)
-    ax.spines['bottom'].set_visible(True)
-    ax.spines['left'].set_visible(True)
+    ax.set_xlim(0.5, 6.5)
+    ax.set_ylim(0, 100)
+    ax.set_xticks([1, 2, 3, 4, 5, 6])
     
     plt.tight_layout()
     
