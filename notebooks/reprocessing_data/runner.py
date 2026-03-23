@@ -12,6 +12,7 @@ Or import from a notebook:
 """
 
 import gc
+import json
 import os
 import re
 import subprocess
@@ -63,12 +64,12 @@ CONDITIONS = [
         'lif_dir':     Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/sfGFP'),
         'results_dir': Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/sfGFP/results'),
     },
-    # {
-    #     'name':        'GFPuv',
-    #     'color':       '#2196F3',
-    #     'lif_dir':     Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/GFPuv'),
-    #     'results_dir': Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/GFPuv/results'),
-    # },
+     {
+         'name':        'GFPuv',
+         'color':       '#2196F3',
+         'lif_dir':     Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/GFPuv'),
+         'results_dir': Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/GFPuv/results'),
+     },
     {
         'name':        'sfGFP_ex',
         'color':       '#FF9800',
@@ -86,9 +87,15 @@ CONDITIONS = [
 CONDA_ENV_NAME = 'microlive'
 
 # --- Photobleaching ---
-# Whether to apply photobleaching correction before intensity extraction.
-APPLY_PHOTOBLEACHING  = True
+# Whether to apply whole-image photobleaching correction before intensity extraction.
+# Set to False to extract intensities from the RAW images (no global correction).
+APPLY_PHOTOBLEACHING  = False
 # TIME_INTERVAL_SECONDS is extracted automatically from the LIF file metadata.
+
+# Per-trajectory exponential detrend applied INSIDE mi.Correlation.run().
+# This corrects each trajectory individually (I(t)/fit → rescale) rather than
+# correcting all pixels globally.  Only takes effect when RUN_ACF_ANALYSIS = True.
+DETREND_PHOTOBLEACHING = True
 
 # --- Intensity extraction ---
 # Disk diameter in pixels for the disk-doughnut photometry window.
@@ -137,7 +144,7 @@ ACF_CORRECT_BASELINE = True
 ACF_USE_LINEAR_PROJECTION_FOR_LAG_0 = True
 ACF_USE_BOOTSTRAP = True
 ACF_BOOTSTRAP_ITERATIONS = 1000  # lower (e.g. 200) for faster exploratory runs
-ACF_REMOVE_OUTLIERS = True
+ACF_REMOVE_OUTLIERS = False
 ACF_MAD_THRESHOLD_FACTOR = 6
 ACF_MULTI_TAU = True
 ACF_MULTI_TAU_RAW_POINTS = 60
@@ -151,7 +158,173 @@ ACF_SAVE_PLOTS = False
 ACF_X_LIMS = None
 ACF_Y_LIMS = None
 
+# --- Gene lengths (codons) for kinetics derivation ---
+GENE_LENGTH = 1826          # full gene in codons
+GENE_LENGTH_HALF_HA = 1659  # half-HA tag construct (codons)
+
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def load_config(yaml_path: str = None) -> str:
+    """Load configuration from a YAML file and overwrite module-level globals.
+
+    Returns the auto-generated param_tag string (used for folder naming).
+    If yaml_path is None, looks for config.yaml next to this script.
+    """
+    import yaml  # pyyaml
+
+    global CONDITIONS, APPLY_PHOTOBLEACHING, DETREND_PHOTOBLEACHING
+    global SPOT_SIZE_PX, FAST_GAUSSIAN_FIT, SNR_METHOD, USE_MAX_PROJECTION
+    global OUTPUT_DIR, RUN_ACF_ANALYSIS, ACF_CHANNELS
+    global PARALLELIZE_CONDITIONS, CONDITION_PARALLEL_N_JOBS, CONDITION_PARALLEL_PREFER
+    global ACF_MIN_PERCENTAGE_DATA_IN_TRAJECTORY, ACF_MAX_MISSING_FRAMES
+    global ACF_MAX_COLUMNS, ACF_MIN_SNR, ACF_SMOOTH_WINDOW
+    global ACF_START_LAG, ACF_MAX_LAG, ACF_DOWNSAMPLE, ACF_DOWNSAMPLING_FACTOR
+    global ACF_USE_GLOBAL_MEAN, ACF_CORRECT_BASELINE
+    global ACF_USE_LINEAR_PROJECTION_FOR_LAG_0, ACF_USE_BOOTSTRAP
+    global ACF_BOOTSTRAP_ITERATIONS, ACF_REMOVE_OUTLIERS, ACF_MAD_THRESHOLD_FACTOR
+    global ACF_MULTI_TAU, ACF_MULTI_TAU_RAW_POINTS, ACF_MULTI_TAU_BINS_PER_STAGE
+    global ACF_FIT_TYPE, ACF_DE_CORRELATION_THRESHOLD, ACF_INDEX_MAX_LAG_FOR_FIT
+    global ACF_BASELINE_METHOD, ACF_SHOW_PLOT, ACF_SAVE_PLOTS
+    global ACF_X_LIMS, ACF_Y_LIMS, GENE_LENGTH, GENE_LENGTH_HALF_HA
+
+    if yaml_path is None:
+        yaml_path = Path(__file__).parent / 'config.yaml'
+    yaml_path = Path(yaml_path)
+    if not yaml_path.exists():
+        print(f"[load_config] No config file at {yaml_path}, using hard-coded defaults.")
+        return _build_param_tag()
+
+    print(f"[load_config] Reading {yaml_path.name}")
+    with open(yaml_path, 'r') as f:
+        cfg = yaml.safe_load(f)
+
+    # ── Conditions ────────────────────────────────────────────────────
+    if 'conditions' in cfg:
+        CONDITIONS = []
+        for c in cfg['conditions']:
+            CONDITIONS.append({
+                'name':        c['name'],
+                'color':       c.get('color', '#888888'),
+                'lif_dir':     Path(c['lif_dir']),
+                'results_dir': Path(c['results_dir']),
+            })
+
+    # ── Photobleaching ────────────────────────────────────────────────
+    if 'apply_photobleaching' in cfg:
+        APPLY_PHOTOBLEACHING = bool(cfg['apply_photobleaching'])
+    if 'detrend_photobleaching' in cfg:
+        DETREND_PHOTOBLEACHING = bool(cfg['detrend_photobleaching'])
+
+    # ── Intensity extraction ──────────────────────────────────────────
+    if 'spot_size_px' in cfg:
+        SPOT_SIZE_PX = int(cfg['spot_size_px'])
+    if 'fast_gaussian_fit' in cfg:
+        FAST_GAUSSIAN_FIT = bool(cfg['fast_gaussian_fit'])
+    if 'snr_method' in cfg:
+        SNR_METHOD = str(cfg['snr_method'])
+    if 'use_max_projection' in cfg:
+        USE_MAX_PROJECTION = bool(cfg['use_max_projection'])
+
+    # ── Output ────────────────────────────────────────────────────────
+    if 'output_dir' in cfg:
+        OUTPUT_DIR = Path(cfg['output_dir'])
+
+    # ── ACF analysis ──────────────────────────────────────────────────
+    if 'run_acf_analysis' in cfg:
+        RUN_ACF_ANALYSIS = bool(cfg['run_acf_analysis'])
+    if 'acf_channels' in cfg:
+        ACF_CHANNELS = list(cfg['acf_channels'])
+
+    # ── Performance ───────────────────────────────────────────────────
+    if 'parallelize_conditions' in cfg:
+        PARALLELIZE_CONDITIONS = bool(cfg['parallelize_conditions'])
+    if 'condition_parallel_n_jobs' in cfg:
+        CONDITION_PARALLEL_N_JOBS = int(cfg['condition_parallel_n_jobs'])
+    if 'condition_parallel_prefer' in cfg:
+        CONDITION_PARALLEL_PREFER = str(cfg['condition_parallel_prefer'])
+
+    # ── ACF preprocessing ─────────────────────────────────────────────
+    _map = {
+        'acf_min_percentage_data_in_trajectory': ('ACF_MIN_PERCENTAGE_DATA_IN_TRAJECTORY', float),
+        'acf_max_missing_frames':  ('ACF_MAX_MISSING_FRAMES', int),
+        'acf_max_columns':         ('ACF_MAX_COLUMNS', int),
+        'acf_min_snr':             ('ACF_MIN_SNR', float),
+        'acf_smooth_window':       ('ACF_SMOOTH_WINDOW', int),
+        'acf_start_lag':           ('ACF_START_LAG', int),
+        'acf_max_lag':             ('ACF_MAX_LAG', int),
+        'acf_downsample':          ('ACF_DOWNSAMPLE', bool),
+        'acf_downsampling_factor': ('ACF_DOWNSAMPLING_FACTOR', int),
+        'acf_use_global_mean':     ('ACF_USE_GLOBAL_MEAN', bool),
+        'acf_correct_baseline':    ('ACF_CORRECT_BASELINE', bool),
+        'acf_use_linear_projection_for_lag_0': ('ACF_USE_LINEAR_PROJECTION_FOR_LAG_0', bool),
+        'acf_use_bootstrap':       ('ACF_USE_BOOTSTRAP', bool),
+        'acf_bootstrap_iterations': ('ACF_BOOTSTRAP_ITERATIONS', int),
+        'acf_remove_outliers':     ('ACF_REMOVE_OUTLIERS', bool),
+        'acf_mad_threshold_factor': ('ACF_MAD_THRESHOLD_FACTOR', int),
+        'acf_multi_tau':           ('ACF_MULTI_TAU', bool),
+        'acf_multi_tau_raw_points': ('ACF_MULTI_TAU_RAW_POINTS', int),
+        'acf_multi_tau_bins_per_stage': ('ACF_MULTI_TAU_BINS_PER_STAGE', int),
+        'acf_fit_type':            ('ACF_FIT_TYPE', str),
+        'acf_de_correlation_threshold': ('ACF_DE_CORRELATION_THRESHOLD', float),
+        'acf_baseline_method':     ('ACF_BASELINE_METHOD', str),
+        'acf_show_plot':           ('ACF_SHOW_PLOT', bool),
+        'acf_save_plots':          ('ACF_SAVE_PLOTS', bool),
+    }
+    this_module = sys.modules[__name__]
+    for yaml_key, (global_name, type_fn) in _map.items():
+        if yaml_key in cfg:
+            setattr(this_module, global_name, type_fn(cfg[yaml_key]))
+
+    # Nullable keys (can be null / None)
+    if 'acf_index_max_lag_for_fit' in cfg:
+        v = cfg['acf_index_max_lag_for_fit']
+        ACF_INDEX_MAX_LAG_FOR_FIT = int(v) if v is not None else None
+    if 'acf_x_lims' in cfg:
+        ACF_X_LIMS = cfg['acf_x_lims']  # list or None
+    if 'acf_y_lims' in cfg:
+        ACF_Y_LIMS = cfg['acf_y_lims']  # list or None
+
+    # ── Gene lengths ──────────────────────────────────────────────────
+    if 'gene_length' in cfg:
+        GENE_LENGTH = int(cfg['gene_length'])
+    if 'gene_length_half_ha' in cfg:
+        GENE_LENGTH_HALF_HA = int(cfg['gene_length_half_ha'])
+
+    tag = _build_param_tag()
+    _print_settings_banner(tag)
+    return tag
+
+
+def _build_param_tag() -> str:
+    """Build a descriptive folder-name tag from the current module globals."""
+    _fit_tag = 'fast' if FAST_GAUSSIAN_FIT else 'full'
+    _snr_tag = SNR_METHOD.replace('_', '')
+    _pb_tag  = 'noPB' if not APPLY_PHOTOBLEACHING else 'PB'
+    _det_tag = 'detrend' if DETREND_PHOTOBLEACHING else 'noDetrend'
+    _mad_tag = f'mad{ACF_MAD_THRESHOLD_FACTOR}'
+    _out_tag = f'out{ACF_REMOVE_OUTLIERS}'
+    return f'sz{SPOT_SIZE_PX}_{_fit_tag}_{_snr_tag}_{_pb_tag}_{_det_tag}_{_mad_tag}_{_out_tag}'
+
+
+def _print_settings_banner(param_tag: str) -> None:
+    """Print a human-readable summary of the active settings."""
+    cond_names = [c['name'] for c in CONDITIONS]
+    print(f"\n{'='*65}")
+    print(f"  ★  param_tag:               {param_tag}")
+    print(f"  ★  Conditions:              {cond_names}")
+    print(f"  ★  Photobleaching corr:     {APPLY_PHOTOBLEACHING}")
+    print(f"  ★  Detrend photobleaching:  {DETREND_PHOTOBLEACHING}")
+    print(f"  ★  Spot size (px):          {SPOT_SIZE_PX}")
+    print(f"  ★  SNR method:              {SNR_METHOD}")
+    print(f"  ★  ACF min_snr:             {ACF_MIN_SNR}")
+    print(f"  ★  ACF max_lag:             {ACF_MAX_LAG}")
+    print(f"  ★  ACF MAD threshold:       {ACF_MAD_THRESHOLD_FACTOR}")
+    print(f"  ★  ACF remove_outliers:     {ACF_REMOVE_OUTLIERS}")
+    print(f"  ★  ACF bootstrap iters:     {ACF_BOOTSTRAP_ITERATIONS}")
+    print(f"  ★  Gene length (half-HA):   {GENE_LENGTH_HALF_HA}")
+    print(f"  ★  Output dir:              {OUTPUT_DIR}")
+    print(f"{'='*65}\n")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -173,6 +346,8 @@ def get_acf_config_dict() -> dict:
     """Return the current runner-level ACF configuration (for params.json/logging)."""
     return {
         'run_acf_analysis': RUN_ACF_ANALYSIS,
+        'apply_photobleaching': APPLY_PHOTOBLEACHING,
+        'detrend_photobleaching': DETREND_PHOTOBLEACHING,
         'channels': list(ACF_CHANNELS),
         'parallelize_conditions': PARALLELIZE_CONDITIONS,
         'condition_parallel_n_jobs': CONDITION_PARALLEL_N_JOBS,
@@ -297,10 +472,7 @@ def _estimate_dwell_time_without_plot(
         return dwell_time, fit_params
 
     A_fitted, tau_c_fitted, C_fitted = [float(v) for v in params]
-    G_fitted = single_exponential_decay(taus, *params)
-    below_threshold = np.where(G_fitted < float(de_correlation_threshold))[0]
-    if len(below_threshold) > 0:
-        dwell_time = float(taus[int(below_threshold[0])])
+    dwell_time = 2.0 * tau_c_fitted          # AUC equivalence: T_dwell = 2 * τ_c
     fit_params = {
         'A': A_fitted,
         'tau_c': tau_c_fitted,
@@ -308,6 +480,112 @@ def _estimate_dwell_time_without_plot(
         'taus': taus,
     }
     return dwell_time, fit_params
+
+
+# ── Heaviside (Larson 2011) ACF Model ─────────────────────────────────────────
+
+def heaviside_acf_model(tau, A, T, C):
+    """Larson 2011 Eq. 1 with baseline offset.
+
+    G(τ) = A · (1 − τ/T) · H(T − τ)  +  C
+
+    Parameters
+    ----------
+    tau : array-like   – lag times (seconds)
+    A   : float        – amplitude  (≈ 1/c, inverse initiation rate)
+    T   : float        – dwell time (seconds)
+    C   : float        – baseline offset
+    """
+    tau = np.asarray(tau, dtype=float)
+    return np.where(tau <= T, A * (1.0 - tau / T) + C, C)
+
+
+def fit_heaviside_acf(lags, mean_corr, start_lag_idx=1):
+    """Fit the Heaviside ACF model to data.
+
+    Returns
+    -------
+    params : dict  with keys 'A', 'T', 'C', 'A_err', 'T_err', 'C_err'
+             (or None on failure)
+    """
+    lags = np.asarray(lags, dtype=float)
+    mc   = np.asarray(mean_corr, dtype=float)
+
+    # Use only positive lags starting from start_lag_idx
+    sl = max(start_lag_idx, 1)
+    T_vals = lags[sl:]
+    G_vals = mc[sl:]
+
+    # Remove NaNs
+    good = np.isfinite(G_vals) & np.isfinite(T_vals)
+    T_vals = T_vals[good]
+    G_vals = G_vals[good]
+    if len(T_vals) < 4:
+        return None
+
+    # --- Initial guesses ---
+    # Baseline C: mean of the last 20% of data points
+    tail = max(1, len(G_vals) // 5)
+    C0 = float(np.mean(G_vals[-tail:]))
+    # Amplitude A: value at first lag minus baseline
+    A0 = max(float(G_vals[0]) - C0, 1e-8)
+    # Dwell time T: find where G falls to baseline level
+    crossings = np.where(G_vals <= C0)[0]
+    if len(crossings) > 0:
+        T0 = float(T_vals[crossings[0]])
+    else:
+        T0 = float(T_vals[-1] / 2)
+    T0 = max(T0, 10.0)  # at least 10 seconds
+
+    try:
+        popt, pcov = curve_fit(
+            heaviside_acf_model,
+            T_vals, G_vals,
+            p0=[A0, T0, C0],
+            bounds=([0, 1, -np.inf], [np.inf, np.inf, np.inf]),
+            maxfev=50000,
+        )
+        perr = np.sqrt(np.diag(pcov))
+        return {
+            'A': float(popt[0]),
+            'T': float(popt[1]),
+            'C': float(popt[2]),
+            'A_err': float(perr[0]),
+            'T_err': float(perr[1]),
+            'C_err': float(perr[2]),
+        }
+    except Exception as e:
+        print(f'    Heaviside fit failed: {e}')
+        return None
+
+
+def compute_kinetics_heaviside(hfit, mean_corr, gene_length,
+                               ribosomal_footprint=10):
+    """Derive kinetics from the Heaviside fit (Larson 2011).
+
+    Unlike the exponential model, T is the dwell time directly
+    (no factor-of-2 conversion).
+
+    Initiation rate:  c = 1 / (G(0) · T)
+    where G(0) = A (the fitted amplitude), per Larson 2011 Eq. 1.
+    """
+    T_dwell = hfit['T']            # dwell time = T directly
+    ke = gene_length / T_dwell     # elongation rate (codons/s)
+    A  = hfit['A']                 # fitted amplitude = G(0) from Heaviside
+    ki = 1.0 / (A * T_dwell)      # initiation rate (1/s)  [Larson Eq.1]
+
+    rho = (ki * ribosomal_footprint / ke) * 100
+    n_rib = (ki * gene_length) / ke
+    rib_dist = gene_length / n_rib if n_rib > 0 else np.nan
+
+    return {
+        'T_dwell': round(T_dwell, 2),
+        'ke': round(ke, 4),
+        'ki': round(ki, 4),
+        'ribosomal_density': round(rho, 3),
+        'n_ribosomes': round(n_rib, 3),
+        'ribosomal_distance': round(rib_dist, 3),
+    }
 
 
 def _run_acf_for_condition(
@@ -409,6 +687,7 @@ def _run_acf_for_condition(
                     line_color_fit='dimgray',
                     plot_name=(str(plot_path) if plot_path is not None else None),
                     figsize=(3.2, 2.2),
+                    detrend_photobleaching=DETREND_PHOTOBLEACHING,
                 )
                 if hasattr(corr_obj, 'BOOTSTRAP_ITERATIONS'):
                     corr_obj.BOOTSTRAP_ITERATIONS = int(ACF_BOOTSTRAP_ITERATIONS)
@@ -449,6 +728,27 @@ def _run_acf_for_condition(
                 fit_tau_c = float(fit_params.get('tau_c', np.nan))
                 fit_C = float(fit_params.get('C', np.nan))
 
+            # ── Heaviside / Larson 2011 fit ────────────────────────────────
+            lags_arr = np.asarray(lags)
+            mc_arr = np.asarray(mean_corr)
+            hfit = fit_heaviside_acf(lags_arr, mc_arr, start_lag_idx=ACF_START_LAG)
+
+            hev_A = hev_T = hev_C = hev_A_err = hev_T_err = hev_C_err = np.nan
+            hev_ke = hev_ki = hev_dwell_time = np.nan
+            kin_hev = None
+            if hfit is not None:
+                hev_A = float(hfit['A'])
+                hev_T = float(hfit['T'])
+                hev_C = float(hfit['C'])
+                hev_A_err = float(hfit['A_err'])
+                hev_T_err = float(hfit['T_err'])
+                hev_C_err = float(hfit['C_err'])
+                kin_hev = compute_kinetics_heaviside(
+                    hfit, mc_arr, gene_length=GENE_LENGTH_HALF_HA)
+                hev_ke = float(kin_hev['ke'])
+                hev_ki = float(kin_hev['ki'])
+                hev_dwell_time = float(kin_hev['T_dwell'])
+
             result_dict = {
                 'condition': condition_name,
                 'condition_color': condition_color,
@@ -463,6 +763,8 @@ def _run_acf_for_condition(
                 'number_of_trajectories_final': number_of_trajectories_final,
                 'number_of_cells_final': number_of_cells_final,
                 'fit_params_': fit_params,
+                'hfit': hfit,
+                'kin_hev': kin_hev,
                 'plot_name': f'{condition_name}_ch{ch}',
                 'df': curve_df,
                 'dataset': condition_name,
@@ -508,15 +810,33 @@ def _run_acf_for_condition(
                 'fit_A': fit_A,
                 'fit_tau_c': fit_tau_c,
                 'fit_C': fit_C,
+                'hev_A': hev_A,
+                'hev_T': hev_T,
+                'hev_C': hev_C,
+                'hev_A_err': hev_A_err,
+                'hev_T_err': hev_T_err,
+                'hev_C_err': hev_C_err,
+                'hev_ke': hev_ke,
+                'hev_ki': hev_ki,
+                'hev_dwell_time': hev_dwell_time,
+                'gene_length_half_HA': GENE_LENGTH_HALF_HA,
                 'curve_csv_path': (str(curve_csv_path) if curve_csv_path is not None else ''),
                 'intensity_csv_path': (str(intensity_csv_path) if intensity_csv_path is not None else ''),
+                'apply_photobleaching': APPLY_PHOTOBLEACHING,
+                'detrend_photobleaching': DETREND_PHOTOBLEACHING,
                 'status': 'ok',
                 'error_message': '',
             })
+            # ── Console summary with both models ──────────────────────────
+            exp_info = f", exp_dwell={dwell_time:.2f}s" if dwell_time is not None else ""
+            hev_info = (
+                f", hev_T={hev_T:.1f}s, hev_ke={hev_ke:.2f}aa/s"
+                if hfit is not None else ", hev=FAILED"
+            )
             print(
                 f"  [ACF] {condition_name} ch{ch}: "
                 f"{number_of_cells_final} cells/images, {number_of_trajectories_final} traces"
-                + (f", dwell={dwell_time:.2f}s" if dwell_time is not None else "")
+                + exp_info + hev_info
             )
 
         except Exception as exc:
@@ -556,8 +876,20 @@ def _run_acf_for_condition(
                 'fit_A': np.nan,
                 'fit_tau_c': np.nan,
                 'fit_C': np.nan,
+                'hev_A': np.nan,
+                'hev_T': np.nan,
+                'hev_C': np.nan,
+                'hev_A_err': np.nan,
+                'hev_T_err': np.nan,
+                'hev_C_err': np.nan,
+                'hev_ke': np.nan,
+                'hev_ki': np.nan,
+                'hev_dwell_time': np.nan,
+                'gene_length_half_HA': GENE_LENGTH_HALF_HA,
                 'curve_csv_path': (str(curve_csv_path) if curve_csv_path is not None else ''),
                 'intensity_csv_path': (str(intensity_csv_path) if intensity_csv_path is not None else ''),
+                'apply_photobleaching': APPLY_PHOTOBLEACHING,
+                'detrend_photobleaching': DETREND_PHOTOBLEACHING,
                 'status': 'error',
                 'error_message': msg,
             })
@@ -669,8 +1001,20 @@ def _process_single_condition(
                     'fit_A': np.nan,
                     'fit_tau_c': np.nan,
                     'fit_C': np.nan,
+                    'hev_A': np.nan,
+                    'hev_T': np.nan,
+                    'hev_C': np.nan,
+                    'hev_A_err': np.nan,
+                    'hev_T_err': np.nan,
+                    'hev_C_err': np.nan,
+                    'hev_ke': np.nan,
+                    'hev_ki': np.nan,
+                    'hev_dwell_time': np.nan,
+                    'gene_length_half_HA': GENE_LENGTH_HALF_HA,
                     'curve_csv_path': '',
                     'intensity_csv_path': '',
+                    'apply_photobleaching': APPLY_PHOTOBLEACHING,
+                    'detrend_photobleaching': DETREND_PHOTOBLEACHING,
                     'status': 'error',
                     'error_message': str(exc),
                 })
@@ -753,8 +1097,20 @@ def _process_single_condition(
                     'fit_A': np.nan,
                     'fit_tau_c': np.nan,
                     'fit_C': np.nan,
+                    'hev_A': np.nan,
+                    'hev_T': np.nan,
+                    'hev_C': np.nan,
+                    'hev_A_err': np.nan,
+                    'hev_T_err': np.nan,
+                    'hev_C_err': np.nan,
+                    'hev_ke': np.nan,
+                    'hev_ki': np.nan,
+                    'hev_dwell_time': np.nan,
+                    'gene_length_half_HA': GENE_LENGTH_HALF_HA,
                     'curve_csv_path': '',
                     'intensity_csv_path': (str(condition_csv_path) if condition_csv_path is not None else ''),
+                    'apply_photobleaching': APPLY_PHOTOBLEACHING,
+                    'detrend_photobleaching': DETREND_PHOTOBLEACHING,
                     'status': 'error',
                     'error_message': str(exc),
                 })
@@ -894,20 +1250,149 @@ def run_pipeline(
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    # Short identifier encoding the three key extraction parameters.
-    # Example: sz5_fast_peak  |  sz7_full_disk_doughnut
-    _fit_tag = 'fast' if FAST_GAUSSIAN_FIT else 'full'
-    _snr_tag = SNR_METHOD.replace('_', '')   # 'peak' or 'diskdoughnut'
-    param_tag = f'sz{SPOT_SIZE_PX}_{_fit_tag}_{_snr_tag}'
+    import argparse
+    parser = argparse.ArgumentParser(description='Reprocessing intensity pipeline')
+    parser.add_argument('--config', '-c', type=str, default=None,
+                        help='Path to YAML config file (default: config.yaml next to this script)')
+    args = parser.parse_args()
+
+    # Load YAML config → overwrites module globals, returns param_tag.
+    param_tag = load_config(args.config)
 
     # Each run gets its own subfolder under OUTPUT_DIR.
     run_dir    = OUTPUT_DIR / param_tag
     output_csv = run_dir / f'master_intensity_dataset_{param_tag}.csv'
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Parameter tag : {param_tag}")
+    # Save a copy of the effective config as JSON for reproducibility.
+    params_record = {
+        'param_tag': param_tag,
+        'conditions': [c['name'] for c in CONDITIONS],
+        'spot_size_px': SPOT_SIZE_PX,
+        'fast_gaussian_fit': FAST_GAUSSIAN_FIT,
+        'snr_method': SNR_METHOD,
+        'apply_photobleaching': APPLY_PHOTOBLEACHING,
+        'detrend_photobleaching': DETREND_PHOTOBLEACHING,
+        'acf_config': get_acf_config_dict(),
+    }
+    with open(run_dir / 'params.json', 'w') as f:
+        json.dump(params_record, f, indent=2)
+
     print(f"Run directory : {run_dir}")
     print(f"CSV           : {output_csv.name}")
+    print(f"params.json   : saved")
 
     master_df = run_pipeline(output_csv=output_csv)
+
+    # ── Generate all plots ────────────────────────────────────────────────
+    from plot_psf import (
+        plot_acf_comparison,
+        plot_acf_exponential_fit,
+        plot_acf_heaviside_fit,
+        plot_acf_individual_fits,
+        plot_individual_trajectories,
+        plot_individual_trajectories_detrended,
+        plot_psf_amplitude_vs_sigma,
+        plot_intensity_distributions,
+        load_acf_results_from_disk,
+        CONDITION_RENAME,
+        MIN_SNR,
+    )
+
+    # Apply any condition renames so colors resolve correctly.
+    if CONDITION_RENAME:
+        master_df['condition'] = master_df['condition'].replace(CONDITION_RENAME)
+
+    plots_dir = run_dir / 'plots'
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"  Generating plots → {plots_dir}")
+    print(f"{'='*60}\n")
+
+    # PSF amplitude vs sigma + distributions per channel.
+    for ch in ACF_CHANNELS:
+        plot_psf_amplitude_vs_sigma(
+            master_df, channel_index=ch, output_dir=plots_dir,
+            save_name=f'psf_amplitude_vs_sigma_ch{ch}_{param_tag}',
+        )
+        plot_intensity_distributions(
+            master_df, field='snr_ch_', channel_index=ch,
+            min_snr=MIN_SNR, x_label='SNR', output_dir=plots_dir,
+            save_name=f'snr_ch{ch}_{param_tag}',
+        )
+        plot_intensity_distributions(
+            master_df, field='spot_int_ch_', channel_index=ch,
+            min_snr=MIN_SNR, x_label='Spot Intensity (a.u.)', output_dir=plots_dir,
+            save_name=f'spot_int_ch{ch}_{param_tag}',
+        )
+
+    # ACF overlay plot (one per channel, all conditions on one figure).
+    acf_results = master_df.attrs.get('acf_results', [])
+
+    # Fallback: if in-memory results are empty, load from saved CSVs.
+    if not acf_results:
+        acf_dir = run_dir / 'acf'
+        if acf_dir.exists():
+            acf_results = load_acf_results_from_disk(acf_dir)
+
+    plot_acf_comparison(acf_results, param_tag=param_tag, output_dir=plots_dir)
+
+    # Per-condition ACF plots with fit overlays (acf_individual.py style).
+    plot_acf_individual_fits(acf_results, param_tag=param_tag, output_dir=plots_dir)
+
+    # Per-condition ACF plots with individual trace overlays (if correlations_array is in memory).
+    for r in acf_results:
+        cond  = r['condition']
+        ch    = r['channel_index']
+        safe  = cond.replace(' ', '_')
+
+        if r.get('correlations_array') is not None:
+            plot_acf_exponential_fit(
+                r,
+                output_path=plots_dir / f'acf_{safe}_ch{ch}_exponential_traces_{param_tag}',
+                show_individual=True,
+            )
+            if r.get('hfit') is not None:
+                plot_acf_heaviside_fit(
+                    r,
+                    output_path=plots_dir / f'acf_{safe}_ch{ch}_heaviside_traces_{param_tag}',
+                    show_individual=True,
+                )
+
+    # Per-condition individual intensity trajectories.
+    conditions = master_df['condition'].unique()
+    for cond in conditions:
+        for ch in ACF_CHANNELS:
+            plot_individual_trajectories(
+                master_df,
+                condition=cond,
+                channel_index=ch,
+                min_snr=MIN_SNR,
+                output_dir=plots_dir,
+                save_name=f'trajectories_{cond}_ch{ch}_{param_tag}',
+            )
+
+    # Per-condition detrended intensity trajectories
+    # (uses same array construction + detrending as the ACF engine).
+    if DETREND_PHOTOBLEACHING:
+        for cond in conditions:
+            for ch in ACF_CHANNELS:
+                plot_individual_trajectories_detrended(
+                    master_df,
+                    condition=cond,
+                    channel_index=ch,
+                    min_snr=ACF_MIN_SNR,
+                    output_dir=plots_dir,
+                    save_name=f'trajectories_detrended_{cond}_ch{ch}_{param_tag}',
+                    min_percentage_data=ACF_MIN_PERCENTAGE_DATA_IN_TRAJECTORY,
+                    max_missing_frames=ACF_MAX_MISSING_FRAMES,
+                    maximum_columns=ACF_MAX_COLUMNS,
+                )
+
+    print(f"\n{'='*60}")
+    print(f"  All plots saved → {plots_dir}")
+    print(f"{'='*60}\n")
+
+    del master_df
     gc.collect()

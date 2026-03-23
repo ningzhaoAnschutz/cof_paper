@@ -49,6 +49,9 @@ import runner  # needed to override module-level globals
 # Import plotting functions from plot_psf.py.
 from plot_psf import (
     plot_acf_comparison,
+    plot_acf_exponential_fit,
+    plot_acf_heaviside_fit,
+    plot_individual_trajectories,
     plot_psf_amplitude_vs_sigma,
     plot_intensity_distributions,
     CONDITION_RENAME,
@@ -86,12 +89,20 @@ def main() -> None:
 
         _fit_tag  = 'fast' if fast_gaussian else 'full'
         _snr_tag  = snr_method.replace('_', '')
-        param_tag = f'sz{spot_size}_{_fit_tag}_{_snr_tag}'
+        _pb_tag   = 'noPB' if not runner.APPLY_PHOTOBLEACHING else 'PB'
+        _det_tag  = 'detrend' if runner.DETREND_PHOTOBLEACHING else 'noDetrend'
+        _mad_tag  = f'mad{runner.ACF_MAD_THRESHOLD_FACTOR}'
+        _out_tag  = f'out{runner.ACF_REMOVE_OUTLIERS}'
+        param_tag = f'sz{spot_size}_{_fit_tag}_{_snr_tag}_{_pb_tag}_{_det_tag}_{_mad_tag}_{_out_tag}'
         run_dir   = OUTPUT_DIR / param_tag
 
         print(f"\n{'#'*65}")
         print(f"  Run {i}/{n}  —  {param_tag}")
         print(f"  spot_size={spot_size}, fast_gaussian={fast_gaussian}, snr='{snr_method}'")
+        print(f"  ★  Photobleaching correction: {runner.APPLY_PHOTOBLEACHING}")
+        print(f"  ★  Detrend photobleaching:    {runner.DETREND_PHOTOBLEACHING}")
+        print(f"  ★  MAD threshold:             {runner.ACF_MAD_THRESHOLD_FACTOR}")
+        print(f"  ★  Remove outliers:           {runner.ACF_REMOVE_OUTLIERS}")
         print(f"  Output: {run_dir}")
         print(f"{'#'*65}\n")
 
@@ -148,6 +159,40 @@ def main() -> None:
         # ACF overlay plot (one per channel, all conditions on one figure).
         acf_results = master_df.attrs.get('acf_results', [])
         plot_acf_comparison(acf_results, param_tag=param_tag, output_dir=plots_dir)
+
+        # Per-condition ACF plots with fit overlays + individual traces.
+        for r in acf_results:
+            cond  = r['condition']
+            ch    = r['channel_index']
+            safe  = cond.replace(' ', '_')
+
+            # Exponential fit
+            plot_acf_exponential_fit(
+                r,
+                output_path=plots_dir / f'acf_{safe}_ch{ch}_exponential_{param_tag}',
+                show_individual=True,
+            )
+
+            # Heaviside fit (only if fit succeeded)
+            if r.get('hfit') is not None:
+                plot_acf_heaviside_fit(
+                    r,
+                    output_path=plots_dir / f'acf_{safe}_ch{ch}_heaviside_{param_tag}',
+                    show_individual=True,
+                )
+
+        # Per-condition individual intensity trajectories.
+        conditions = master_df['condition'].unique()
+        for cond in conditions:
+            for ch in [0, 1]:
+                plot_individual_trajectories(
+                    master_df,
+                    condition=cond,
+                    channel_index=ch,
+                    min_snr=MIN_SNR,
+                    output_dir=plots_dir,
+                    save_name=f'trajectories_{cond}_ch{ch}_{param_tag}',
+                )
 
         del master_df
         gc.collect()

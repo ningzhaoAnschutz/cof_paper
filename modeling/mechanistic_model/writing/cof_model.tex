@@ -379,12 +379,20 @@ Applying Eq.~\ref{eq:twopool_efficiency}: $\text{CoF}(3) = 0.65 \times \frac{100
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.85\textwidth]{../modeling/figures/fig4_twopool_solution.png}
-\caption{\textbf{Two-Pool Model:} 
-(A) Model fit shows agreement with experimental data, correctly predicting the increasing efficiency trend.
-(B) Schematic of the Two-Pool model with foldable and non-foldable populations.
-(C) Fitted parameters: $\kfold = 0.014$ s$^{-1}$ ($\taufold = 71$ s), $f_{\text{base}} = 0.37$, $f_{\text{gain}} = 0.14$.
-(D) Translation timeline showing the time windows for folding for each GFP domain.}
+\begin{subfigure}[t]{0.52\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{cof_diagrams.pdf}
+    \caption{Two-Pool model schematic. Translating mRNA enters a branching point where a fraction $f_{\text{eff}}$ produces foldable nascent chains ($U_i \to F_i$ with rate $\kfold$) and the remaining fraction $1 - f_{\text{eff}}$ produces no signal.}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.44\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{../modeling/figures/fig4_panel_b.png}
+    \caption{Model fit to experimental data. Individual cell measurements (gray), mean $\pm$ SEM (black), and Two-Pool predictions (red crosses).}
+\end{subfigure}
+\caption{\textbf{Two-Pool Model.}
+(A)~Schematic of the Two-Pool model with foldable and non-foldable populations. The effective foldable fraction $f_{\text{eff}} = f_{\text{base}} + f_{\text{gain}} \cdot (n_{\text{GFP}} - 1)$ increases with the number of GFP domains (avidity effect).
+(B)~Model fit shows agreement with experimental data, correctly predicting the increasing efficiency trend with fitted parameters: $\kfold = 0.014$~s$^{-1}$ ($\taufold = 71$~s), $f_{\text{base}} = 0.37$, $f_{\text{gain}} = 0.14$.}
 \label{fig:twopool_solution}
 \end{figure}
 
@@ -410,6 +418,89 @@ Sensitivity of $\chi^2$ (weighted MSE) to each parameter while holding other par
 
 
 %==============================================================================
+\section{The Two-Pool Model for Slow-Folding GFP (GFPuv)}
+\label{sec:twopool_slow}
+%==============================================================================
+
+To test whether the Two-Pool framework generalizes beyond superfolding GFP (sfGFP), we applied it to constructs containing GFPuv, a GFP variant with significantly slower folding kinetics. The same construct architecture was used (smHA--$n\times$GFPuv--mCh--MS2), with constructs available for $n_{\text{GFP}} = 1, 2, 3, 4$, and $6$ (the 5$\times$GFPuv construct was not available). If the Two-Pool model captures a genuine biophysical mechanism rather than overfitting to the sfGFP dataset, it should successfully fit the GFPuv data with parameters that reflect the known slower folding kinetics.
+
+\subsection{Experimental Data (GFPuv)}
+
+\begin{table}[H]
+\centering
+\caption{Experimental CoF efficiency measurements for GFPuv constructs}
+\label{tab:exp_data_slow}
+\begin{tabular}{@{}cccc@{}}
+\toprule
+\textbf{$n_{\text{GFP}}$} & \textbf{Mean (\%)} & \textbf{SEM (\%)} & \textbf{$N$ (cells)} \\
+\midrule
+1 & 11.8 & 1.1 & 35 \\
+2 & 17.2 & 1.0 & 33 \\
+3 & 21.9 & 1.0 & 32 \\
+4 & 22.9 & 1.2 & 32 \\
+6 & 21.6 & 1.1 & 39 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Compared to the sfGFP data (Table~\ref{tab:exp_data}), GFPuv constructs show substantially lower CoF efficiencies across all domain numbers (12--23\% vs.\ 32--67\%), consistent with a slower folding rate limiting the fraction of domains that fold before translation terminates. The saturation behavior is also apparent, with efficiency plateauing around $n = 3$--4 domains.
+
+\subsection{Best-Fit Model: Two-Pool Results for GFPuv}
+
+The Two-Pool model was fit to the GFPuv data using the same optimization procedure described in Section~\ref{sec:parameter_estimation}. Table~\ref{tab:twopool_params_slow} summarizes the fitted parameters alongside the sfGFP values for comparison.
+
+\begin{table}[H]
+\centering
+\caption{Fitted Two-Pool parameters: sfGFP vs.\ GFPuv comparison}
+\label{tab:twopool_params_slow}
+\begin{tabular}{@{}lccll@{}}
+\toprule
+\textbf{Parameter} & \textbf{sfGFP} & \textbf{GFPuv} & \textbf{Units} & \textbf{Interpretation} \\
+\midrule
+$\kfold$ & 0.014 & 0.004 & s$^{-1}$ & Folding rate \\
+$\taufold$ & 71 & 251 & s & Folding time ($\sim$3.5$\times$ slower) \\
+$f_{\text{base}}$ & 0.37 & 0.20 & --- & Baseline foldable fraction \\
+$f_{\text{gain}}$ & 0.14 & 0.09 & per domain & Avidity gain per additional GFP \\
+$\chi^2$ & 17.9 & 3.3 & --- & Fit quality (weighted MSE) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The results reveal three key differences between the GFP variants. First, GFPuv folds approximately 3.5$\times$ slower than sfGFP ($\taufold = 251$~s vs.\ 71~s), consistent with the known in vitro folding kinetics of these variants. Notably, with $\taufold = 251$~s, even GFP$_1$ (which has the longest time window of 248~s) barely has sufficient time to fold before translation terminates, explaining the dramatically lower overall efficiencies. Second, the baseline foldable fraction is lower for GFPuv ($f_{\text{base}} = 0.20$ vs.\ 0.37), indicating that fewer nascent chains are competent for co-translational folding with the slower-folding variant. Third, the avidity gain is reduced ($f_{\text{gain}} = 0.09$ vs.\ 0.14), consistent with a weaker per-domain contribution when each domain folds less efficiently.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.45\textwidth]{../modeling/figures/fig7_twopool_slow_fit.png}
+\caption{\textbf{Two-Pool Model Fit to GFPuv Data.}
+Data points show individual cell measurements (gray) with mean $\pm$ SEM (black). Red crosses indicate Two-Pool model predictions. The model successfully captures the lower efficiencies and saturation behavior of the slower-folding GFPuv variant.}
+\label{fig:twopool_slow_fit}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{../modeling/figures/fig8_twopool_slow_parameter_space.png}
+\caption{\textbf{Two-Pool Model Parameter Space for GFPuv.}
+Pairwise 2D sweeps showing $\chi^2$ as a function of parameter pairs (other parameters held at best-fit values). Red stars indicate best-fit values.
+(A)~$\taufold$ vs $f_{\text{base}}$.
+(B)~$\taufold$ vs $f_{\text{gain}}$.
+(C)~$f_{\text{base}}$ vs $f_{\text{gain}}$.}
+\label{fig:twopool_slow_space}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{../modeling/figures/fig9_twopool_slow_sensitivity.png}
+\caption{\textbf{Two-Pool Model Parameter Sensitivity for GFPuv.}
+Sensitivity of $\chi^2$ to each parameter while holding others at best-fit values. Shaded regions indicate acceptable ranges ($\chi^2 \leq 2\times$ best); dashed lines mark best-fit values.
+(A)~$\tau_{\text{fold}}$ sensitivity.
+(B)~$f_{\text{base}}$ sensitivity.
+(C)~$f_{\text{gain}}$ sensitivity.}
+\label{fig:twopool_slow_sensitivity}
+\end{figure}
+
+The successful fit to GFPuv data ($\chi^2 = 3.3$) confirms that the Two-Pool framework is not specific to sfGFP but generalizes across GFP variants with different intrinsic folding kinetics. The model correctly captures both the reduced absolute efficiencies and the earlier saturation observed with GFPuv constructs.
+
+%==============================================================================
 \section{Parameter Estimation}
 \label{sec:parameter_estimation}
 %==============================================================================
@@ -430,7 +521,7 @@ We use differential evolution, a global optimization algorithm suitable for non-
 \section{Conclusions}
 %==============================================================================
 
-The Two-Pool model explains the saturation behavior by proposing that only $\sim$37\% of nascent chains are initially competent for co-translational folding, with each additional GFP domain increasing this fraction by $\sim$14\% (avidity effect). The fitted folding rate $\kfold = 0.014$ s$^{-1}$ ($\taufold \approx 71$s) is consistent with in vitro GFP folding kinetics. The time constraint hypothesis explains why later GFP domains contribute less to the signal: they have progressively shorter time windows before translation terminates and the polysome disassembles, leaving insufficient time to complete the folding process.
+The Two-Pool model explains the saturation behavior by proposing that only $\sim$37\% of nascent chains are initially competent for co-translational folding, with each additional GFP domain increasing this fraction by $\sim$14\% (avidity effect). The fitted folding rate $\kfold = 0.014$ s$^{-1}$ ($\taufold \approx 71$s) is consistent with in vitro GFP folding kinetics. The time constraint hypothesis explains why later GFP domains contribute less to the signal: they have progressively shorter time windows before translation terminates and the polysome disassembles, leaving insufficient time to complete the folding process. The model generalizes to GFPuv, a slower-folding variant ($\taufold \approx 251$~s), yielding a reduced baseline foldable fraction ($f_{\text{base}} = 0.20$) and avidity gain ($f_{\text{gain}} = 0.09$), confirming that the Two-Pool framework captures a variant-independent biophysical mechanism.
 
 \textbf{Simplifying assumptions.} Translation termination is modeled as instantaneous at the stop codon, and only folding completed before ribosome release contributes to the measured signal. All GFP domains are assumed to fold with identical rate constants ($\kfold$), and intrabody binding to folded GFP is assumed to be fast relative to folding (not rate-limiting). The model uses time-averaged polysome parameters rather than stochastic simulation of individual ribosome dynamics.
 

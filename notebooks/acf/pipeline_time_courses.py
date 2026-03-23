@@ -704,6 +704,8 @@ def compute_autocorrelation_for_dataset(
     verbose=True,
     save_plots=False,
     fit_type='linear',
+    plot_individual_trajectories =False,
+    detrend_photobleaching=False,
     de_correlation_threshold=0.001,
     # Simulation mode parameters
     simulation_mode=False,  # Enable simulation mode
@@ -718,7 +720,6 @@ def compute_autocorrelation_for_dataset(
     line_color='blue',
     line_color_fit='red',
     figsize=(8, 6),
-    detrend_photobleaching=False,
 ):
     """
     Compute autocorrelation function (ACF) for experimental or simulated data.
@@ -889,7 +890,7 @@ def compute_autocorrelation_for_dataset(
                 use_global_mean=use_global_mean,
                 remove_outliers=remove_outliers,
                 MAD_THRESHOLD_FACTOR=MAD_THRESHOLD_FACTOR,
-                plot_individual_trajectories=False,
+                plot_individual_trajectories=plot_individual_trajectories,
                 y_axes_min_max_list_values=y_axes_min_max_list_values,
                 x_axes_min_max_list_values=x_axes_min_max_list_values,
                 multi_tau=multi_tau,

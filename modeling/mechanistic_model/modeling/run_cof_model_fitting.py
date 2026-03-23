@@ -117,8 +117,8 @@ class TranslationParameters:
     information for the tandem GFP reporter construct.
     
     Attributes:
-        k_elongation: Ribosome elongation rate in aa/s (4.85 aa/s from autocorrelation).
-        k_init: Translation initiation rate in s⁻¹ (0.063 s⁻¹, ~1 ribosome/16s).
+        k_elongation: Ribosome elongation rate in aa/s.
+        k_init: Translation initiation rate in s⁻¹.
         L_tunnel: Amino acids required to clear ribosome exit tunnel (35 aa).
         L_total: Total gene length in amino acids (1826 aa).
         ribosome_footprint: Amino acids covered by one ribosome (10 aa = 30 nt).
@@ -127,26 +127,29 @@ class TranslationParameters:
         GFP_emergence_positions: List of positions after clearing exit tunnel.
     
     Example:
-        >>> params = TranslationParameters()
+        >>> params = TranslationParameters(k_elongation=3.68, k_init=0.064)
         >>> print(f"Total translation time: {params.T_total:.1f}s")
         >>> print(f"GFP1 has {params.time_window(1):.0f}s to fold")
     """
     
-    k_elongation = 4.85  # aa/s (elongation rate, from autocorrelation analysis)
-    k_init = 0.063       # s^-1 (initiation rate, from autocorrelation analysis)
     L_tunnel = 35        # aa required to clear ribosome exit tunnel
-    L_total = 1826       # Total gene length in aa
     ribosome_footprint = 10  # aa covered by one ribosome (10 codons = 30 nt)
     
     # Sequence positions (aa) - loaded from CSV
     HA_end = 326
     
-    def __init__(self, csv_path=None):
-        """Initialize with GFP positions from CSV file.
+    def __init__(self, k_elongation=3.68, k_init=0.064, L_total=1826, csv_path=None):
+        """Initialize with translation kinetics and GFP positions.
         
         Args:
+            k_elongation: Elongation rate in aa/s (default: 3.68 for sfGFP).
+            k_init: Initiation rate in s⁻¹ (default: 0.064 for sfGFP).
+            L_total: Total construct length in aa (default: 1826).
             csv_path: Path to CSV file with GFP positions. Uses default if None.
         """
+        self.k_elongation = k_elongation
+        self.k_init = k_init
+        self.L_total = L_total
         gfp_ends, gfp_emergence = load_gfp_positions(csv_path)
         self.GFP_domain_ends = gfp_ends  # C-terminus of each GFP domain
         self.GFP_emergence_positions = gfp_emergence  # Position after clearing tunnel
@@ -404,20 +407,12 @@ def load_data(filepath):
         # Get reporter variant
         reporter = str(df.iloc[reporter_row, col_idx]) if pd.notna(df.iloc[reporter_row, col_idx]) else ''
         
-        # Parse GFP count from reporter variant
-        if '6xsfGFP' in reporter:
-            n_gfp = 6
-        elif '5xsfGFP' in reporter:
-            n_gfp = 5
-        elif '4xsfGFP' in reporter:
-            n_gfp = 4
-        elif '3xsfGFP' in reporter:
-            n_gfp = 3
-        elif '2xsfGFP' in reporter:
-            n_gfp = 2
-        elif '1xsfGFP' in reporter:
-            n_gfp = 1
-        elif '6xmCh' in reporter and 'sfGFP' not in reporter:
+        # Parse GFP count from reporter variant using regex
+        # Matches patterns like 6xsfGFP, 4xGFPuv, 1xsfGFP, etc.
+        gfp_match = re.search(r'(\d+)x(?:sf)?GFP', reporter, re.IGNORECASE)
+        if gfp_match:
+            n_gfp = int(gfp_match.group(1))
+        elif '6xmCh' in reporter and 'GFP' not in reporter.upper():
             n_gfp = 0
         else:
             continue
@@ -452,7 +447,7 @@ def weighted_mse(pred_list, obs_list, sem_list):
 
 
 
-def fit_two_pool(exp_data):
+def fit_two_pool(exp_data, params=None):
     """
     Fit Two-Pool model with biologically-constrained parameter bounds.
     
@@ -470,14 +465,15 @@ def fit_two_pool(exp_data):
     f_gain: Gain per additional GFP domain (0.01-0.20)
         Increase in foldable fraction per additional GFP copy
     """
-    model = TwoPoolModel()
-    obs = [np.mean(exp_data[n]) for n in range(1, 7)]
-    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
+    model = TwoPoolModel(params=params)
+    n_vals = [n for n in range(1, 7) if len(exp_data[n]) > 0]
+    obs = [np.mean(exp_data[n]) for n in n_vals]
+    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in n_vals]
     
     def objective(params):
         k_fold = 10**params[0]
         f_base, f_gain = params[1], params[2]
-        pred = [model.efficiency(n, k_fold, f_base, f_gain) for n in range(1, 7)]
+        pred = [model.efficiency(n, k_fold, f_base, f_gain) for n in n_vals]
         return weighted_mse(pred, obs, sem)
     
     # Parameter bounds:
@@ -508,7 +504,7 @@ def fit_two_pool(exp_data):
 
 
 
-def fit_one_pool(exp_data):
+def fit_one_pool(exp_data, params=None):
     """
     Fit One-Pool (pure kinetic) model with EXTENDED parameter bounds.
     
@@ -518,13 +514,14 @@ def fit_one_pool(exp_data):
     Kinetic constraints:
     - τ_fold: 30-250s (extended range)
     """
-    model = OnePoolModel()
-    obs = [np.mean(exp_data[n]) for n in range(1, 7)]
-    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
+    model = OnePoolModel(params=params)
+    n_vals = [n for n in range(1, 7) if len(exp_data[n]) > 0]
+    obs = [np.mean(exp_data[n]) for n in n_vals]
+    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in n_vals]
     
     def objective(params):
         k_fold = 10**params[0]
-        pred = [model.efficiency(n, k_fold) for n in range(1, 7)]
+        pred = [model.efficiency(n, k_fold) for n in n_vals]
         return weighted_mse(pred, obs, sem)
     
     # τ_fold: 30-250s → k_fold: 0.004-0.033 s⁻¹ → log10: -2.40 to -1.48
@@ -548,7 +545,7 @@ def fit_one_pool(exp_data):
 
 
 
-def twopool_sensitivity_analysis(exp_data, best_params, chi2_threshold=None):
+def twopool_sensitivity_analysis(exp_data, best_params, chi2_threshold=None, params=None):
     """
     Perform parameter sensitivity analysis on the Two-Pool model.
     
@@ -570,7 +567,7 @@ def twopool_sensitivity_analysis(exp_data, best_params, chi2_threshold=None):
     --------
     dict with sensitivity analysis results
     """
-    model = TwoPoolModel()
+    model = TwoPoolModel(params=params)
     
     # Best fit values
     k_fold_best = best_params['k_fold']
@@ -578,11 +575,12 @@ def twopool_sensitivity_analysis(exp_data, best_params, chi2_threshold=None):
     f_gain_best = best_params['f_gain']
     
     # Get experimental data for χ² calculation
-    obs = [np.mean(exp_data[n]) for n in range(1, 7)]
-    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
+    n_vals = [n for n in range(1, 7) if len(exp_data[n]) > 0]
+    obs = [np.mean(exp_data[n]) for n in n_vals]
+    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in n_vals]
     
     def compute_chi2(k_fold, f_base, f_gain):
-        preds = [model.efficiency(n, k_fold, f_base, f_gain) for n in range(1, 7)]
+        preds = [model.efficiency(n, k_fold, f_base, f_gain) for n in n_vals]
         return weighted_mse(preds, obs, sem)
     
     best_chi2 = compute_chi2(k_fold_best, f_base_best, f_gain_best)
@@ -853,7 +851,7 @@ def create_onepool_sensitivity_figure(exp_data, result, save_path):
 
 
 
-def create_twopool_parameter_space(exp_data, result, save_path):
+def create_twopool_parameter_space(exp_data, result, save_path, params=None):
     """Create Two-Pool model parameter space analysis figure (Fig 5).
     
     Shows pairwise parameter combinations for the 3 model parameters:
@@ -861,22 +859,26 @@ def create_twopool_parameter_space(exp_data, result, save_path):
     
     Uses χ² (weighted MSE) for consistency with the fitting objective function.
     """
-    model = TwoPoolModel()
+    model = TwoPoolModel(params=params)
     
     # Get experimental data for χ² calculation
-    obs = [np.mean(exp_data[n]) for n in range(1, 7)]
-    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in range(1, 7)]
+    n_vals = [n for n in range(1, 7) if len(exp_data[n]) > 0]
+    obs = [np.mean(exp_data[n]) for n in n_vals]
+    sem = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in n_vals]
     
     # Helper function to get predictions using TwoPoolModel
     def get_twopool_predictions(k_fold, f_base, f_gain):
-        return [model.efficiency(n, k_fold, f_base, f_gain) for n in range(1, 7)]
+        return [model.efficiency(n, k_fold, f_base, f_gain) for n in n_vals]
     
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
     
-    # Define parameter ranges
-    tau_fold_range = np.linspace(30, 100, 30)
-    f_base_range = np.linspace(0.2, 0.6, 30)
-    f_gain_range = np.linspace(0.05, 0.20, 30)
+    # Define parameter ranges centered on best-fit values (±50% margin)
+    tau_best = result['tau_fold']
+    tau_fold_range = np.linspace(max(20, tau_best * 0.3), tau_best * 1.7, 30)
+    fb_best = result['f_base']
+    f_base_range = np.linspace(max(0.05, fb_best - 0.2), min(0.95, fb_best + 0.2), 30)
+    fg_best = result['f_gain']
+    f_gain_range = np.linspace(max(0.01, fg_best - 0.08), min(0.30, fg_best + 0.08), 30)
     
     # Panel A: tau_fold vs f_base
     ax = axes[0]
@@ -931,7 +933,7 @@ def create_twopool_parameter_space(exp_data, result, save_path):
     print(f"Two-Pool parameter space saved: {save_path}")
 
 
-def create_onepool_comprehensive_figure(exp_data, result, save_path):
+def create_onepool_comprehensive_figure(exp_data, result, save_path, params=None):
     """
     Create a comprehensive One-Pool figure matching the old Fig 2 style:
     - Top row: One-Pool model schematic + Model fit + Parameters
@@ -943,7 +945,8 @@ def create_onepool_comprehensive_figure(exp_data, result, save_path):
     gs = GridSpec(2, 3, figure=fig, height_ratios=[1, 0.7], 
                   width_ratios=[0.9, 1.3, 0.8], hspace=0.30, wspace=0.20)
     
-    params = TranslationParameters()
+    if params is None:
+        params = TranslationParameters()
     k_fold = result['k_fold']
     tau_fold = result['tau_fold']
     
@@ -1103,7 +1106,7 @@ def create_onepool_comprehensive_figure(exp_data, result, save_path):
     print(f"One-Pool comprehensive figure saved: {save_path}")
 
 
-def create_twopool_comprehensive_figure(exp_data, best, save_path):
+def create_twopool_comprehensive_figure(exp_data, best, save_path, params=None):
     """
     Create a comprehensive figure combining:
     - Top row: Two-Pool model schematic + Model fit + Parameters (like cof_summary_figure)
@@ -1116,7 +1119,8 @@ def create_twopool_comprehensive_figure(exp_data, best, save_path):
     gs = GridSpec(2, 3, figure=fig, height_ratios=[1, 0.7], 
                   width_ratios=[1, 1.3, 0.7], hspace=0.30, wspace=0.20)
     
-    params = TranslationParameters()
+    if params is None:
+        params = TranslationParameters()
     k_fold = best['k_fold']
     
     # Color palette for domains (green -> yellow -> orange -> red)
@@ -1302,51 +1306,68 @@ def main():
     print("CO-TRANSLATIONAL FOLDING - MECHANISTIC MODEL FITTING")
     print("="*70)
     
-    params = TranslationParameters()
+    # =====================================================================
+    # Per-variant translation parameters
+    # =====================================================================
+    params_sfgfp = TranslationParameters(k_elongation=3.68, k_init=0.064, L_total=1826)
+    params_gfpuv = TranslationParameters(k_elongation=2.59, k_init=0.028, L_total=1826)
     
-    # Report translation parameters and polysome context
+    # Report sfGFP translation parameters
     print("\n" + "-"*70)
-    print("TRANSLATION PARAMETERS (FIXED FROM LITERATURE)")
+    print("TRANSLATION PARAMETERS — sfGFP")
     print("-"*70)
-    print(f"  k_elong (elongation rate):     {params.k_elongation} aa/s")
-    print(f"  k_init (initiation rate):      {params.k_init} s⁻¹  (1 ribosome every {1/params.k_init:.0f}s)")
-    print(f"  L_total (construct length):    {params.L_total} aa")
-    print(f"  Ribosome footprint:            {params.ribosome_footprint} aa")
+    print(f"  k_elong (elongation rate):     {params_sfgfp.k_elongation} aa/s")
+    print(f"  k_init (initiation rate):      {params_sfgfp.k_init} s⁻¹  (1 ribosome every {1/params_sfgfp.k_init:.0f}s)")
+    print(f"  L_total (construct length):    {params_sfgfp.L_total} aa")
+    print(f"  Total translation time:        {params_sfgfp.T_total:.1f}s ({params_sfgfp.T_total/60:.1f} min)")
+    print(f"  Mean ribosome spacing:         {params_sfgfp.mean_ribosome_spacing:.0f} aa")
+    print(f"  Avg ribosomes per mRNA:        {params_sfgfp.avg_ribosomes_per_mRNA:.1f} ribosomes")
     
-    print("\n" + "-"*70)
-    print("POLYSOME CONTEXT (DERIVED)")
-    print("-"*70)
-    print(f"  Total translation time:        {params.T_total:.1f}s ({params.T_total/60:.1f} min)")
-    print(f"  Mean ribosome spacing:         {params.mean_ribosome_spacing:.0f} aa")
-    print(f"  Avg ribosomes per mRNA:        {params.avg_ribosomes_per_mRNA:.1f} ribosomes")
-    
-    print("\nDomain Time Windows (time available for folding):")
+    print("\nDomain Time Windows (sfGFP):")
     for p in range(1, 7):
-        print(f"  Position {p}: {params.time_window(p):.0f}s")
+        print(f"  Position {p}: {params_sfgfp.time_window(p):.0f}s")
     
+    # Report GFPuv translation parameters
+    print("\n" + "-"*70)
+    print("TRANSLATION PARAMETERS — GFPuv")
+    print("-"*70)
+    print(f"  k_elong (elongation rate):     {params_gfpuv.k_elongation} aa/s")
+    print(f"  k_init (initiation rate):      {params_gfpuv.k_init} s⁻¹  (1 ribosome every {1/params_gfpuv.k_init:.0f}s)")
+    print(f"  L_total (construct length):    {params_gfpuv.L_total} aa")
+    print(f"  Total translation time:        {params_gfpuv.T_total:.1f}s ({params_gfpuv.T_total/60:.1f} min)")
+    print(f"  Mean ribosome spacing:         {params_gfpuv.mean_ribosome_spacing:.0f} aa")
+    print(f"  Avg ribosomes per mRNA:        {params_gfpuv.avg_ribosomes_per_mRNA:.1f} ribosomes")
+    
+    print("\nDomain Time Windows (GFPuv):")
+    for p in range(1, 7):
+        print(f"  Position {p}: {params_gfpuv.time_window(p):.0f}s")
+    
+    # =====================================================================
+    # sfGFP DATASET
+    # =====================================================================
     data_path = Path(__file__).parent / "Dark_mCh_Cells_new.xlsx"
     print(f"\nLoading: {data_path}")
     exp_data = load_data(str(data_path))
     
-    print("\nExperimental Data:")
+    print("\nExperimental Data (sfGFP):")
     for n in range(7):
         v = exp_data[n]
         print(f"  {n}xGFP: {np.mean(v):.1f}% ± {np.std(v, ddof=1)/np.sqrt(len(v)):.1f}% (n={len(v)})")
     
-    # Fit models
+    # Fit models (sfGFP)
     print("\n" + "="*70)
-    print("FITTING MODELS")
+    print("FITTING MODELS (sfGFP)")
     print("="*70)
     
     print("\n[1/2] One-Pool Model (pure kinetic)...")
     print("    Assumption: All nascent chains are competent for folding (f_eff = 1.0)")
-    res_one_pool = fit_one_pool(exp_data)
+    res_one_pool = fit_one_pool(exp_data, params=params_sfgfp)
     print(f"    χ² = {res_one_pool['cost']:.1f}")
     print(f"    τ_fold = {res_one_pool['tau_fold']:.1f}s")
     
     print("\n[2/2] Two-Pool Model...")
     print("    Bounds: τ_fold = 30-250s (GFP folding)")
-    res_pool = fit_two_pool(exp_data)
+    res_pool = fit_two_pool(exp_data, params=params_sfgfp)
     print(f"    χ² = {res_pool['cost']:.1f}")
     print(f"    τ_fold = {res_pool['tau_fold']:.1f}s")
     print(f"    f_base = {res_pool['f_base']:.2f}")
@@ -1354,7 +1375,7 @@ def main():
     
     # Model comparison (χ² only)
     print("\n" + "="*70)
-    print("MODEL COMPARISON: ONE-POOL vs TWO-POOL")
+    print("MODEL COMPARISON: ONE-POOL vs TWO-POOL (sfGFP)")
     print("="*70)
     
     print(f"\n{'Model':<20} {'k':>4} {'χ²':>10}")
@@ -1377,7 +1398,7 @@ def main():
     best = res_pool
     
     print("\n" + "="*70)
-    print(f"BEST MODEL: Two-Pool - χ² = {res_pool['cost']:.1f}")
+    print(f"BEST MODEL: Two-Pool (sfGFP) - χ² = {res_pool['cost']:.1f}")
     print("="*70)
     
     print(f"\nFitted Parameters:")
@@ -1391,30 +1412,81 @@ def main():
         pred = res_pool['predictions'][n]
         print(f"  {n}xGFP: Data={obs:.1f}%, Model={pred:.1f}%, Δ={obs-pred:+.1f}")
     
-    # Generate figures
+    # Generate figures (sfGFP)
     output_dir = Path(__file__).parent / 'figures'
     output_dir.mkdir(exist_ok=True)
     
     # Fig 2: One-Pool model comprehensive (schematic + fit + params + timeline)
-    create_onepool_comprehensive_figure(exp_data, res_one_pool, str(output_dir / "fig2_onepool_solution.png"))
+    create_onepool_comprehensive_figure(exp_data, res_one_pool, str(output_dir / "fig2_onepool_solution.png"), params=params_sfgfp)
     
     # Fig 3: One-Pool parameter analysis  
     create_onepool_sensitivity_figure(exp_data, res_one_pool, str(output_dir / "fig3_onepool_parameters.png"))
     
     # Fig 4: Two-Pool model comprehensive (schematic + fit + params + timeline)
-    create_twopool_comprehensive_figure(exp_data, res_pool, str(output_dir / "fig4_twopool_solution.png"))
+    create_twopool_comprehensive_figure(exp_data, res_pool, str(output_dir / "fig4_twopool_solution.png"), params=params_sfgfp)
     
     # Fig 4 Panel B: Standalone Two-Pool model fit panel
     create_fig4_panel_b(exp_data, res_pool, str(output_dir / "fig4_panel_b"))
     
     # Fig 5: Two-Pool parameter space analysis (2x3 grid)
-    create_twopool_parameter_space(exp_data, res_pool, str(output_dir / "fig5_twopool_parameter_space.png"))
+    create_twopool_parameter_space(exp_data, res_pool, str(output_dir / "fig5_twopool_parameter_space.png"), params=params_sfgfp)
     
     # Fig 6: Two-Pool parameter sensitivity (1x4 horizontal)
-    sensitivity_results = twopool_sensitivity_analysis(exp_data, res_pool)
+    sensitivity_results = twopool_sensitivity_analysis(exp_data, res_pool, params=params_sfgfp)
     create_twopool_sensitivity_figure(sensitivity_results, str(output_dir / "fig6_twopool_sensitivity.png"))
     
-    # Save results
+    # =====================================================================
+    # GFPuv (SLOW) DATASET
+    # =====================================================================
+    print("\n" + "="*70)
+    print("FITTING GFPuv DATASET")
+    print("="*70)
+    
+    data_path_slow = Path(__file__).parent / "Dark_mCh_Cells_slow.xlsx"
+    print(f"\nLoading: {data_path_slow}")
+    exp_data_slow = load_data(str(data_path_slow))
+    
+    available_n = [n for n in range(7) if len(exp_data_slow[n]) > 0]
+    print(f"Available GFP counts: {available_n}")
+    print("\nExperimental Data (GFPuv):")
+    for n in range(7):
+        v = exp_data_slow[n]
+        if len(v) > 0:
+            print(f"  {n}xGFP: {np.mean(v):.1f}% ± {np.std(v, ddof=1)/np.sqrt(len(v)):.1f}% (n={len(v)})")
+        else:
+            print(f"  {n}xGFP: NO DATA")
+    
+    print("\nFitting Two-Pool model to GFPuv data...")
+    res_pool_slow = fit_two_pool(exp_data_slow, params=params_gfpuv)
+    print(f"  χ² = {res_pool_slow['cost']:.1f}")
+    print(f"  τ_fold = {res_pool_slow['tau_fold']:.1f}s")
+    print(f"  f_base = {res_pool_slow['f_base']:.2f}")
+    print(f"  f_gain = {res_pool_slow['f_gain']:.2f}")
+    
+    print("\nPredictions vs Data (GFPuv):")
+    for n in available_n:
+        if n == 0:
+            continue
+        obs_val = np.mean(exp_data_slow[n])
+        pred_val = res_pool_slow['predictions'][n]
+        print(f"  {n}xGFP: Data={obs_val:.1f}%, Model={pred_val:.1f}%, Δ={obs_val-pred_val:+.1f}")
+    
+    # Fig 7: GFPuv Two-Pool model fit
+    create_fig4_panel_b(exp_data_slow, res_pool_slow,
+                        str(output_dir / "fig7_twopool_slow_fit"),
+                        label="Two-Pool Model (slow)")
+    
+    # Fig 8: GFPuv parameter space
+    create_twopool_parameter_space(exp_data_slow, res_pool_slow,
+                                    str(output_dir / "fig8_twopool_slow_parameter_space.png"),
+                                    params=params_gfpuv)
+    
+    # Fig 9: GFPuv sensitivity analysis
+    sens_slow = twopool_sensitivity_analysis(exp_data_slow, res_pool_slow, params=params_gfpuv)
+    create_twopool_sensitivity_figure(sens_slow,
+                                       str(output_dir / "fig9_twopool_slow_sensitivity.png"))
+    
+    # Save results (both datasets)
     with open(output_dir / "fit_results.json", 'w') as f:
         json.dump({
             'best_model': 'TwoPool',
@@ -1425,7 +1497,18 @@ def main():
                 'f_gain': res_pool['f_gain'],
                 'chi2': res_pool['cost'],
                 'predictions': res_pool['predictions'],
-                'n_params': 3
+                'n_params': 3,
+                'data_file': 'Dark_mCh_Cells_new.xlsx'
+            },
+            'two_pool_slow': {
+                'k_fold': res_pool_slow['k_fold'],
+                'tau_fold': res_pool_slow['tau_fold'],
+                'f_base': res_pool_slow['f_base'],
+                'f_gain': res_pool_slow['f_gain'],
+                'chi2': res_pool_slow['cost'],
+                'predictions': res_pool_slow['predictions'],
+                'n_params': 3,
+                'data_file': 'Dark_mCh_Cells_slow.xlsx'
             },
             'one_pool': {
                 'k_fold': res_one_pool['k_fold'],
@@ -1434,17 +1517,46 @@ def main():
                 'predictions': res_one_pool['predictions'],
                 'n_params': 1
             },
-            'translation_params': {
-                'k_elong': params.k_elongation,
-                'k_init': params.k_init,
-                'L_total': params.L_total,
-                'T_total': params.T_total,
-                'avg_ribosomes': params.avg_ribosomes_per_mRNA,
-                'mean_spacing': params.mean_ribosome_spacing
+            'translation_params_sf_gfp': {
+                'k_elong': params_sfgfp.k_elongation,
+                'k_init': params_sfgfp.k_init,
+                'L_total': params_sfgfp.L_total
+            },
+            'translation_params_gfp_uv': {
+                'k_elong': params_gfpuv.k_elongation,
+                'k_init': params_gfpuv.k_init,
+                'L_total': params_gfpuv.L_total
             },
             'timestamp': datetime.now().isoformat()
         }, f, indent=2)
     print(f"\nResults saved: {output_dir / 'fit_results.json'}")
+    
+    # Export CSV summary with all parameters for both variants
+    csv_path = output_dir / "fit_results.csv"
+    csv_rows = []
+    for label, res, tp in [('sfGFP', res_pool, params_sfgfp),
+                            ('GFPuv', res_pool_slow, params_gfpuv)]:
+        row = {
+            'variant': label,
+            'k_elong_aa_per_s': tp.k_elongation,
+            'k_init_per_s': tp.k_init,
+            'L_total_aa': tp.L_total,
+            'T_total_s': round(tp.T_total, 1),
+            'k_fold_per_s': round(res['k_fold'], 6),
+            'tau_fold_s': round(res['tau_fold'], 1),
+            'f_base': round(res['f_base'], 4),
+            'f_gain_per_domain': round(res['f_gain'], 4),
+            'chi2': round(res['cost'], 2),
+            'data_file': res.get('data_file', ''),
+        }
+        # How many GFP domains have enough time to fold (time_window > tau_fold)
+        tau_fold = res['tau_fold']
+        n_can_fold = sum(1 for p in range(1, 7) if tp.time_window(p) > tau_fold)
+        row['max_GFP_can_fold'] = n_can_fold
+        csv_rows.append(row)
+    df_csv = pd.DataFrame(csv_rows)
+    df_csv.to_csv(csv_path, index=False)
+    print(f"CSV saved: {csv_path}")
     
     print("\n" + "="*70)
     print("COMPLETE")
@@ -1452,7 +1564,7 @@ def main():
     
     return best
 
-def create_fig4_panel_b(exp_data=None, best=None, save_path=None):
+def create_fig4_panel_b(exp_data=None, best=None, save_path=None, label='Two-Pool Model'):
     """
     Create Figure 4 Panel B independently: Two-Pool model fit to experimental data.
     
@@ -1505,24 +1617,26 @@ def create_fig4_panel_b(exp_data=None, best=None, save_path=None):
     # Create figure
     fig, ax = plt.subplots(figsize=(5, 5))
     
-    n_vals = list(range(1, 7))
+    n_vals = [n for n in range(1, 7) if len(exp_data[n]) > 0]
+    # Use evenly-spaced x-positions so there's no gap for missing counts
+    x_pos = list(range(1, len(n_vals) + 1))
     exp_means = [np.mean(exp_data[n]) for n in n_vals]
     exp_sems = [np.std(exp_data[n], ddof=1)/np.sqrt(len(exp_data[n])) for n in n_vals]
     preds = [best['predictions'][n] for n in n_vals]
     
     # Plot individual data points with jitter - DARKGRAY color
-    for n in range(1, 7):
+    for xi, n in zip(x_pos, n_vals):
         jitter = np.random.normal(0, 0.05, len(exp_data[n]))
-        ax.scatter([n + j for j in jitter], exp_data[n], 
+        ax.scatter([xi + j for j in jitter], exp_data[n], 
                    alpha=0.35, color='darkgray', s=18, zorder=1)
     
     # Error bars for mean ± SEM
-    ax.errorbar(n_vals, exp_means, yerr=exp_sems, fmt='o', capsize=5, capthick=2, 
+    ax.errorbar(x_pos, exp_means, yerr=exp_sems, fmt='o', capsize=5, capthick=2, 
                 color='dimgray', markersize=10, label='Data (mean ± SEM)', zorder=3, linewidth=2)
     
     # Model predictions
-    ax.scatter(n_vals, preds, color='red', s=200, zorder=4, marker='+', linewidths=3.5,
-               label='Two-Pool Model')
+    ax.scatter(x_pos, preds, color='red', s=200, zorder=4, marker='+', linewidths=3.5,
+               label=label)
     
     # Axis labels - size 16, NOT bold
     ax.set_xlabel('Number of GFP Domains', fontsize=16, fontweight='normal')
@@ -1534,10 +1648,11 @@ def create_fig4_panel_b(exp_data=None, best=None, save_path=None):
     # Legend - placed outside the figure at the top
     ax.legend(loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=2, fontsize=10, frameon=True)
     
-    # Axis limits
-    ax.set_xlim(0.5, 6.5)
+    # Axis limits — evenly spaced, labeled with actual GFP counts
+    ax.set_xlim(0.5, len(n_vals) + 0.5)
     ax.set_ylim(0, 100)
-    ax.set_xticks([1, 2, 3, 4, 5, 6])
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels([str(n) for n in n_vals])
     
     plt.tight_layout()
     

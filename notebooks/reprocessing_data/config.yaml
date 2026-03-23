@@ -1,0 +1,119 @@
+# ============================================================================
+#  Reprocessing Pipeline Configuration
+# ============================================================================
+#  Edit this file to change settings, then run:
+#      python runner.py
+#
+#  The output folder name is auto-generated from the key parameters below,
+#  so different settings produce different folders for easy comparison.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+#  Experimental Conditions
+# ----------------------------------------------------------------------------
+#  Each entry defines one condition.  Comment out entries to skip them.
+conditions:
+  - name:        sfGFP
+    color:       "#4CAF50"
+    lif_dir:     /Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/sfGFP
+    results_dir: /Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/sfGFP/results
+
+  - name:        GFPuv
+    color:       "#2196F3"
+    lif_dir:     /Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/GFPuv
+    results_dir: /Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/GFPuv/results
+
+  - name:        sfGFP_ex
+    color:       "#FF9800"
+    lif_dir:     /Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/pRS038
+    results_dir: /Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/pRS038/results
+
+  - name:        sfGFP_sx
+    color:       "#E91E63"
+    lif_dir:     /Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/pRS048
+    results_dir: /Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/pRS048/results
+
+# ----------------------------------------------------------------------------
+#  Photobleaching
+# ----------------------------------------------------------------------------
+#  apply_photobleaching: Whole-image exponential correction BEFORE intensity
+#                        extraction.  Set to false for raw images.
+#  detrend_photobleaching: Per-trajectory exponential detrend INSIDE the ACF
+#                          (mi.Correlation.run).  Corrects each trace individually.
+apply_photobleaching:  false
+detrend_photobleaching: true
+
+# ----------------------------------------------------------------------------
+#  Intensity Extraction
+# ----------------------------------------------------------------------------
+spot_size_px:         5            # Disk diameter (px).  Typical: 3, 5, 7, 9, 11
+fast_gaussian_fit:    true         # true = moment-based; false = full curve_fit
+snr_method:           peak         # 'peak' or 'disk_doughnut'
+use_max_projection:   true         # Collapse Z via max-projection
+
+# ----------------------------------------------------------------------------
+#  Output
+# ----------------------------------------------------------------------------
+output_dir: /Users/nzlab-la/Desktop/cof_paper/notebooks/reprocessing_data/results
+
+# ----------------------------------------------------------------------------
+#  ACF Analysis
+# ----------------------------------------------------------------------------
+run_acf_analysis:     true
+acf_channels:         [1]          # [0], [1], or [0, 1]
+
+# ---- Preprocessing (DataFrame → trajectory array) ----
+acf_min_percentage_data_in_trajectory: 0.3
+acf_max_missing_frames:  1
+acf_max_columns:         360
+acf_min_snr:             0.0
+acf_smooth_window:       1
+
+# ---- Correlation engine ----
+acf_start_lag:           1
+acf_max_lag:             240
+acf_downsample:          false
+acf_downsampling_factor: 3
+acf_use_global_mean:     false
+acf_correct_baseline:    true
+acf_use_linear_projection_for_lag_0: true
+acf_use_bootstrap:       true
+acf_bootstrap_iterations: 1000     # Lower (e.g. 200) for faster exploratory runs
+acf_remove_outliers:     true
+acf_mad_threshold_factor: 4
+acf_multi_tau:           true
+acf_multi_tau_raw_points: 60
+acf_multi_tau_bins_per_stage: 16
+# Fit model used by mi.Correlation.plot_autocorrelation for dwell-time estimation.
+# Options:
+#   'exponential'  – Fits G(τ) = A·exp(−τ/τ_c) + C via curve_fit.
+#                    Dwell time = lag where the fitted curve drops below
+#                    de_correlation_threshold.  τ_c is the correlation time.
+#                    This is the standard choice for most analyses.
+#   'linear'       – Fits a straight line to G(τ) and extrapolates to zero.
+#                    Dwell time = x-intercept (−intercept / slope).
+#                    Simpler but less accurate for noisy or non-linear ACFs.
+# NOTE: The Heaviside (Larson 2011) fit is ALWAYS computed in addition to
+#       whichever fit_type is selected here. It runs as a separate step in
+#       runner.py and does not depend on this setting.
+acf_fit_type:            exponential
+acf_de_correlation_threshold: 0.001
+acf_index_max_lag_for_fit: null    # null = auto
+acf_baseline_method:     auto_plateau
+acf_show_plot:           false     # Keep batch runs non-interactive
+acf_save_plots:          false
+acf_x_lims:              null      # null = auto, or [min, max]
+acf_y_lims:              null      # null = auto, or [min, max]
+
+# ----------------------------------------------------------------------------
+#  Gene Lengths (codons) — for kinetics derivation
+# ----------------------------------------------------------------------------
+gene_length:             1826      # Full gene in codons
+gene_length_half_ha:     1659      # Half-HA tag construct
+
+# ----------------------------------------------------------------------------
+#  Performance / Parallelism
+# ----------------------------------------------------------------------------
+parallelize_conditions:       false
+condition_parallel_n_jobs:    -2       # -1 = all CPUs, -2 = all except one
+condition_parallel_prefer:    threads  # 'threads' or 'processes'

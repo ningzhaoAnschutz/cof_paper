@@ -70,3 +70,4 @@ kk_*
 # ignore csv files
 *.csv
 *kk_old/
+*.npz
