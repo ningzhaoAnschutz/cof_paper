@@ -33,6 +33,10 @@ REPORTER_PLASMID_NAME_MAPPING = {
     'pRS048': 'Xbp1-4sfGFP-2mCh',    # Xbp1(S255A) at N-term, 4x sfGFP, 2x mCh
     'pRS049': 'Xbp1-4GFPuv-2mCh',   # Xbp1(S255A) at N-term, 4x mGFPuv, 2x mCh
 
+    # Deoptimized variants (same GFP copy number but with deoptimized codons)
+    'pRS084': '4sfGFP-deopt-2mCh',   # 4x sfGFP (deoptimized), 2x mCh
+    'pRS045': '4GFPuv-deopt-2mCh',  # 4x mGFPuv (deoptimized), 2x mCh
+
     # mCherry-only control (always plotted last)
     'pNZ381': '6mCh',            # 0x sfGFP, 6x mCh
 
@@ -58,5 +62,7 @@ PLASMID_SHORT_NAME_MAPPING = {
     'pRS039': '4uv-Xbp1',   # 4 GFPuv + Xbp1
     'pRS048': 'Xbp1-4sf',   # Xbp1 + 4 sfGFP
     'pRS049': 'Xbp1-4uv',   # Xbp1 + 4 GFPuv
+    'pRS084': '4sf-deopt',   # 4 sfGFP (deoptimized)
+    'pRS045': '4uv-deopt',   # 4 GFPuv (deoptimized)
     'pNZ381': '0sf',   # 0 sfGFP copies (mCh-only control)
 }
