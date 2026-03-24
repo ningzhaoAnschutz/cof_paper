@@ -315,8 +315,6 @@ def plot_efficiency_vs_intensity_scatter_means(
     return ax
 
 
-
-
 def confidence_ellipse(x, y, ax, n_std=2.0, **kwargs):
     """Draw an n_std confidence ellipse around the mean of x and y."""
     if len(x) < 3:
@@ -330,10 +328,10 @@ def confidence_ellipse(x, y, ax, n_std=2.0, **kwargs):
 
 def plot_efficiency_vs_intensity_kde(
     data_dict, condition_labels, intensity_key='int_ch_0', x_label="Spot Intensity", y_label="CoF Efficiency (%)",
-    title="", figsize=(8, 6), tick_size=12, marker_size=20, marker_alpha=0.5, kde_alpha =0.12,
+    title="", figsize=(8, 6), tick_size=12, marker_size=20, marker_alpha=0.5, kde_alpha=0.12,
     show_condition_means=False, mean_marker_size=100, show_marginals=False,
     show_kde=True, show_ellipse=False, ellipse_std=2.0,
-    show_regression=False, x_lim =None, y_lim = None, colors=None,
+    show_regression=False, x_lim=None, y_lim=None, colors=None,
     marginal_kws=None, save_dir=None, plot_name='efficiency_vs_intensity_hexbin',
 ):
     """Create joint scatter plot with marginal distributions, colored per condition.
@@ -521,8 +519,6 @@ def plot_efficiency_vs_intensity_kde(
         g.figure.savefig(save_dir / f"{plot_name}.svg", dpi=600, bbox_inches='tight')
     plt.show()
     return g
-
-
 
 
 __all__ = [

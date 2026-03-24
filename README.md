@@ -28,31 +28,52 @@ This project uses:
 
 ## Project Structure
 
-```
+```text
 cof_paper/
+├── utilities/                    # Shared Python package (importable as `import utilities`)
+│   ├── __init__.py               # Package exports
+│   ├── config.py                 # Plasmid name mappings and constants
+│   ├── data_loading.py           # Folder discovery and tracking data extraction
+│   ├── data_aggregation.py       # Multi-condition data aggregation
+│   ├── plotting.py               # Swarm plots, efficiency plots, KDE plots
+│   ├── metadata.py               # Microscopy file metadata (LIF laser intensities)
+│   └── export_to_excel.py        # Export efficiency data to Excel
 ├── notebooks/                    # Analysis notebooks
 │   ├── CoF_project/              # Cotranslational folding analysis & figure generation
-│   │   ├── *_CoF_notebook.ipynb  # Per-construct analysis notebooks
-│   │   ├── notebook_comparing_datasets.ipynb
-│   │   ├── notebook_folding_efficiency.ipynb
-│   │   └── load_data.py          # Shared data loading utilities
+│   │   ├── Fig 1_CoF Analysis Notebook.ipynb
+│   │   ├── Fig 2_GFPFast_CoF Analysis Notebook.ipynb
+│   │   ├── Fig 2_GFPSlow_CoF Analysis Notebook.ipynb
+│   │   ├── Fig 3_CoF Analysis Notebook.ipynb
+│   │   ├── Fig 4_GFPFast_CoF Analysis Notebook.ipynb
+│   │   ├── Fig 4_GFPSlow_CoF Analysis Notebook.ipynb
+│   │   ├── Fig 5_GFPFast_CoF Analysis Notebook.ipynb
+│   │   └── All Plots_20260310.ipynb
+│   ├── Inhibitors/               # Inhibitor runoff experiments
+│   │   ├── inhibitors.py         # Inhibitor analysis module (fitting, plotting)
+│   │   ├── Fig 3_Harringtonine_Fast vs Slow.ipynb
+│   │   ├── Fig 4_Harringtonine_GFPFast.ipynb
+│   │   ├── Fig 1_Puromycin_all reporters.ipynb
+│   │   └── Harringtonine_example.ipynb
+│   ├── acf/                      # Autocorrelation function analysis
+│   │   ├── acf_individual.py     # Individual ACF analysis
+│   │   ├── acf_sensitivity.py    # Sensitivity analysis
+│   │   ├── pipeline_time_courses.py  # ACF processing pipeline
+│   │   └── processing_time_courses.ipynb
 │   ├── FRAP_analyses/            # FRAP processing and visualization
 │   │   ├── FRAP_processing_RS.ipynb
 │   │   ├── FRAP_representative_images_RS.ipynb
 │   │   └── frap_plotting_module.py
-│   ├── Inhibitors/               # Inhibitor runoff experiments
 │   ├── autocorrelations/         # Time-course correlation analysis
-│   │   ├── processing_time_courses.ipynb
-│   │   └── cross_correlation_cof.ipynb
-│   └── codon_optimization/       # CAI analysis and codon studies
+│   ├── codon_optimization/       # CAI analysis and codon studies
+│   ├── image_conditions/         # Laser intensity audits
+│   └── reprocessing_data/        # Data reprocessing workflows
 ├── modeling/                     # Simulation and modeling
 │   ├── mechanistic_model/        # Kinetic models (One-Pool, Two-Pool)
-│   │   ├── modeling/             # Model fitting scripts
-│   │   └── writing/              # LaTeX documentation
 │   ├── TASEP/                    # TASEP ribosome translation simulations
 │   └── cellpose_models/          # Custom Cellpose segmentation models
 ├── data/                         # Data files (not tracked in git)
 │   └── gene_sequences/           # Gene sequence files (.dna)
+├── .agent/workflows/             # AI-assisted workflow definitions
 ├── docs/                         # Documentation
 ├── requirements.txt              # Python dependencies
 └── README.md                     # This file

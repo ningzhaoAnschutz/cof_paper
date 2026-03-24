@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .config import REPORTER_PLASMID_NAME_MAPPING, PLASMID_SHORT_NAME_MAPPING
+from .config import REPORTER_PLASMID_NAME_MAPPING
 
 
 def _parse_folder_substring(folder_substring):

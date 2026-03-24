@@ -25,8 +25,6 @@ plt.rcParams.update({
         'axes.edgecolor': 'black',
     })
 
-
-
 def calculate_number_of_particles_per_frame(particle_counts_per_frame, inhibitor_frame_index):
     """
     Normalize the number of particles per frame to the average before treatment.
@@ -54,9 +52,6 @@ def calculate_number_of_particles_per_frame(particle_counts_per_frame, inhibitor
         normalized_particles = particle_counts_per_frame / average_particles_before_treatment
 
     return normalized_particles, average_particles_before_treatment
-
-
-
 
 def calculate_intensity(particle_counts_per_frame, sum_intensities_per_frame, inhibitor_frame_index, normalization_method='mean', percentile_range=(5, 95)):
     """
@@ -115,7 +110,7 @@ def calculate_intensity(particle_counts_per_frame, sum_intensities_per_frame, in
             intensities_normalized_before_treatment_intensity = np.zeros_like(average_intensity_with_respect_number_particles)
         else:
             intensities_normalized_before_treatment_intensity = (average_intensity_with_respect_number_particles - val_low) / (val_high - val_low)
-    elif normalization_method ==     'mean':
+    elif normalization_method == 'mean':
         mean_before_treatment = average_intensity_with_respect_number_particles[:inhibitor_frame_index].mean()
         intensities_normalized_before_treatment_intensity = average_intensity_with_respect_number_particles / mean_before_treatment
     elif normalization_method is None:
@@ -124,100 +119,334 @@ def calculate_intensity(particle_counts_per_frame, sum_intensities_per_frame, in
     return intensities_normalized_before_treatment_intensity, average_intensity_with_respect_number_particles, average_particles_before_treatment
 
 
+# ── Model definitions ────────────────────────────────────────────────────────
+
+def _linear_model(x, a, b):
+    """Linear decay: y = a*x + b"""
+    return a * x + b
 
 
-def plot_inhibitor(full_frames,intensities_normalized,inhibitor_frame_index, results_folder=None,plot_name='HT',list_param=None,responding_indices=None,figsize=(6, 3),time_array_min=None,
-        mean_intensity_ssa_inh=None, err_intensity_ssa_inh=None, use_sem=True,show_individual_trajectories=True,threshold_percentage_for_runoff = 0.2,show_runoff_time=True, ylims=(0, 1.5), y_label='Norm. Intensity', treatment_label='Inhibitor', show_treatment_line=True):
-    if results_folder is None: # create a new folder called results_HT in the current directory
+def _exponential_model(x, A, tau, C):
+    """Exponential decay: y = A * exp(-x/τ) + C"""
+    return A * np.exp(-x / tau) + C
+
+
+def _heaviside_model(x, A, T, C):
+    """Larson 2011 Heaviside-ramp: y = A*(1 - x/T)*H(T - x) + C
+
+    Linear decay from A+C to C, then flat at C for x > T.
+    """
+    x = np.asarray(x, dtype=float)
+    return np.where(x <= T, A * (1.0 - x / T) + C, C)
+
+
+# ── Fitting function ─────────────────────────────────────────────────────────
+
+def fit_inhibitor_model(x_data, y_data, model='exponential',
+                        fit_start_idx=None, fit_end_idx=None,
+                        runoff_fraction=0.95):
+    """Fit inhibitor run-off data to a decay model.
+
+    Parameters
+    ----------
+    x_data : np.ndarray
+        Time array (e.g., time in minutes, recentered so 0 = inhibitor).
+    y_data : np.ndarray
+        Mean intensity trajectory (1D).
+    model : str
+        One of 'linear', 'exponential', 'heaviside'.
+    fit_start_idx : int or None
+        Index into x_data/y_data for the start of the fitting range.
+        Defaults to 0 (start of the array).
+    fit_end_idx : int or None
+        Index into x_data/y_data for the end of the fitting range (inclusive).
+        Defaults to len(x_data) - 1 (end of the array).
+    runoff_fraction : float
+        Fraction of total decay used to define run-off time (default 0.95).
+
+    Returns
+    -------
+    dict or None
+        On success, a dictionary with:
+            'model'       : str   – model name
+            'params'      : dict  – fitted parameter values
+            'fitted_curve': np.ndarray – fitted y-values over the FULL x_data range
+            't_half'      : float – half-time (time for 50 % decay)
+            't_runoff'    : float – run-off time (time for `runoff_fraction` decay)
+        Returns None if fitting fails.
+    """
+    x_data = np.asarray(x_data, dtype=float)
+    y_data = np.asarray(y_data, dtype=float)
+
+    # Default range: full array
+    i0 = fit_start_idx if fit_start_idx is not None else 0
+    i1 = (fit_end_idx + 1) if fit_end_idx is not None else len(x_data)
+
+    x_fit = x_data[i0:i1]
+    y_fit = y_data[i0:i1]
+
+    # Remove NaN values (e.g., from artifact removal at inhibitor frame)
+    valid = np.isfinite(x_fit) & np.isfinite(y_fit)
+    x_fit = x_fit[valid]
+    y_fit = y_fit[valid]
+
+    if len(x_fit) < 3:
+        print('fit_inhibitor_model: not enough data points to fit.')
+        return None
+
+    model = model.lower().strip()
+
+    try:
+        if model == 'linear':
+            # y = a*x + b
+            popt, pcov = curve_fit(_linear_model, x_fit, y_fit)
+            a, b = popt
+            perr = np.sqrt(np.diag(pcov))
+            fitted_full = _linear_model(x_data, *popt)
+
+            # Derived quantities
+            # Estimate actual baseline from last 20% of data
+            tail = max(1, len(y_fit) // 5)
+            Iss = float(np.mean(y_fit[-tail:]))
+            I0 = b  # intensity at x = 0 (fitted intercept)
+            if a != 0 and I0 != Iss:
+                t_half = (I0 - (I0 + Iss) / 2.0) / (-a)   # when y = midpoint
+                t_runoff = (I0 - Iss) / (-a)                # when y = baseline
+            else:
+                t_half = np.inf
+                t_runoff = np.inf
+
+            params = {'a (slope)': a, 'b (intercept)': b,
+                      'Iss (baseline)': Iss,
+                      'a_err': perr[0], 'b_err': perr[1]}
+
+        elif model == 'exponential':
+            # y = A * exp(-x/τ) + C
+            # Initial guesses (robust to negative/positive baselines)
+            tail = max(1, len(y_fit) // 5)
+            C0 = float(np.mean(y_fit[-tail:]))   # baseline from last 20%
+            A0 = max(float(y_fit[0]) - C0, 1e-8)
+            tau0 = (x_fit[-1] - x_fit[0]) / 3.0
+            popt, pcov = curve_fit(
+                _exponential_model, x_fit, y_fit,
+                p0=[A0, tau0, C0],
+                bounds=([0, 1e-6, -np.inf], [np.inf, np.inf, np.inf]),
+                maxfev=50000,
+            )
+            A, tau, C = popt
+            perr = np.sqrt(np.diag(pcov))
+            fitted_full = _exponential_model(x_data, *popt)
+
+            # Derived quantities
+            t_half = tau * np.log(2)
+            t_runoff = -tau * np.log(1.0 - runoff_fraction)
+
+            params = {'A (amplitude)': A, 'tau (time constant)': tau,
+                      'C (baseline)': C,
+                      'A_err': perr[0], 'tau_err': perr[1], 'C_err': perr[2]}
+
+        elif model == 'heaviside':
+            # y = A * (1 - x/T) * H(T - x) + C   (Larson 2011)
+            # Initial guesses (robust to negative/positive baselines)
+            tail = max(1, len(y_fit) // 5)
+            C0 = float(np.mean(y_fit[-tail:]))           # baseline from last 20%
+            A0 = max(float(y_fit[0]) - C0, 1e-8)         # amplitude above baseline
+            # Smart T guess: find where data first drops to baseline level
+            crossings = np.where(y_fit <= C0)[0]
+            if len(crossings) > 0:
+                T0 = float(x_fit[crossings[0]] - x_fit[0])
+            else:
+                T0 = float((x_fit[-1] - x_fit[0]) / 2.0)  # fallback: half the range
+            T0 = max(T0, 1.0)  # at least 1 minute
+            popt, pcov = curve_fit(
+                _heaviside_model, x_fit, y_fit,
+                p0=[A0, T0, C0],
+                bounds=([0, 1e-6, -np.inf], [np.inf, np.inf, np.inf]),
+                maxfev=50000,
+            )
+            A, T, C = popt
+            perr = np.sqrt(np.diag(pcov))
+            fitted_full = _heaviside_model(x_data, *popt)
+
+            # Derived quantities
+            t_half = T / 2.0
+            t_runoff = T  # T IS the run-off time for this model
+
+            params = {'A (amplitude)': A, 'T (dwell/run-off time)': T,
+                      'C (baseline)': C,
+                      'A_err': perr[0], 'T_err': perr[1], 'C_err': perr[2]}
+
+        else:
+            print(f'fit_inhibitor_model: unknown model "{model}". '
+                  f'Choose from: linear, exponential, heaviside.')
+            return None
+
+        result = {
+            'model': model,
+            'params': params,
+            'fitted_curve': fitted_full,
+            't_half': t_half,
+            't_runoff': t_runoff,
+            'runoff_fraction': runoff_fraction,
+        }
+        return result
+
+    except Exception as e:
+        print(f'fit_inhibitor_model ({model}): fitting failed – {e}')
+        return None
+
+
+def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
+                   results_folder=None, plot_name='HT', list_param=None,
+                   responding_indices=None, figsize=(6, 3), time_array_min=None,
+                   mean_intensity_ssa_inh=None, err_intensity_ssa_inh=None,
+                   use_sem=True, show_individual_trajectories=True,
+                   ylims=(0, 1.5), y_label='Norm. Intensity',
+                   treatment_label='Inhibitor', show_treatment_line=True,
+                   # ── New fitting parameters ──
+                   fit_model=None, fit_start_idx=None, fit_end_idx=None,
+                   show_fit=True, show_runoff_time=True,
+                   runoff_fraction=0.95):
+    """Plot inhibitor run-off data with optional model fit.
+
+    Parameters
+    ----------
+    full_frames : np.ndarray
+        Time array (e.g., minutes, recentered so 0 = inhibitor application).
+    intensities_normalized : np.ndarray
+        2D array (n_cells × n_frames) of normalized intensities.
+    inhibitor_frame_index : int
+        Frame index at which treatment starts.
+    fit_model : str or None
+        Model to fit: 'linear', 'exponential', 'heaviside', or None (no fit).
+    fit_start_idx : int or None
+        Start index for fitting range. Defaults to inhibitor_frame_index (t=0).
+    fit_end_idx   : int or None
+        End index for fitting range (inclusive). Defaults to last frame.
+    show_fit : bool
+        If True (default), overlay the fitted curve on the plot.
+    show_runoff_time : bool
+        If True (default), draw vertical lines for t½ and τ_runoff.
+    runoff_fraction : float
+        Fraction of total decay for run-off time definition (default 0.95).
+
+    Returns
+    -------
+    dict or None
+        The fit result dictionary from fit_inhibitor_model, or None.
+    """
+    if results_folder is None:
         results_folder = Path(current_dir).joinpath('results_HT')
         results_folder.mkdir(exist_ok=True)
 
     fig, ax = plt.subplots(figsize=figsize, facecolor='white')
     ax.set_facecolor('white')
-    # test if intensities_normalized is not empty or None or full of zeros
+
     if intensities_normalized is None or len(intensities_normalized) == 0:
         print('No data to plot.')
-        return
+        return None
 
     if responding_indices is None:
         responding_indices = list(range(len(intensities_normalized)))
 
+    # Individual trajectories
     if show_individual_trajectories:
         if responding_indices:
             for i in responding_indices:
                 ax.plot(full_frames, intensities_normalized[i],
                         linestyle='-', color='dimgray', linewidth=0.2)
-    if responding_indices:  # check if the list is not empty
-        mean_trajectory = np.mean(intensities_normalized[responding_indices, :], axis=0)
-        std_trajectory = np.std(intensities_normalized[responding_indices, :], axis=0)
+
+    # Mean ± error (NaN-safe for artifact-removed frames)
+    if responding_indices:
+        mean_trajectory = np.nanmean(intensities_normalized[responding_indices, :], axis=0)
+        std_trajectory = np.nanstd(intensities_normalized[responding_indices, :], axis=0)
         if use_sem:
-            err_trajectory = std_trajectory / np.sqrt(len(responding_indices))
+            # Count non-NaN cells per frame for correct SEM
+            n_valid = np.sum(np.isfinite(intensities_normalized[responding_indices, :]), axis=0)
+            n_valid = np.maximum(n_valid, 1)  # avoid division by zero
+            err_trajectory = std_trajectory / np.sqrt(n_valid)
         else:
             err_trajectory = std_trajectory
-    line_mean, = ax.plot(full_frames, mean_trajectory, 'o-',
-                        color='blue', linewidth=1, label='Experimental (mean)', markersize=7)
+
+    ax.plot(full_frames, mean_trajectory, 'o-',
+            color='blue', linewidth=1, label='Experimental (mean)', markersize=7)
     ax.fill_between(full_frames,
                     mean_trajectory - err_trajectory,
                     mean_trajectory + err_trajectory,
                     color='blue', alpha=0.07)
 
+    # TASEP simulation overlay (if provided)
     if mean_intensity_ssa_inh is not None and err_intensity_ssa_inh is not None:
         legend_label_sim = (fr'Model Fit ($k_e$={np.round(list_param[1],1)}, $k_i$={np.round(list_param[0],3)})'
                         if list_param[1] is not None and list_param[0] is not None else 'Simulation')
-        plt.plot(time_array_min-5, mean_intensity_ssa_inh,'-',  color='red', linewidth=3,label=legend_label_sim)
+        plt.plot(time_array_min-5, mean_intensity_ssa_inh, '-', color='red', linewidth=3, label=legend_label_sim)
         plt.fill_between(time_array_min-5, mean_intensity_ssa_inh - err_intensity_ssa_inh,
                         mean_intensity_ssa_inh + err_intensity_ssa_inh, color='red', alpha=0.1)
 
-    use_sigmoidal_fit = True
-    if use_sigmoidal_fit:
-        # in this section fit the sigmoidal function to the data and determine the runoff time as the time when the curve reaches threshold
-        def decreasing_sigmoid(t, ymin, ymax, t_half, slope):
-            return ymin + (ymax - ymin) / (1.0 + np.exp((t - t_half) / slope))
-        # Initial guess: t_half is slightly after treatment (time=0)
-        t_half_guess = (full_frames.max() - full_frames.min()) / 4  # Guess t_half as 1/4 of the time range
-        popt, _ = curve_fit(decreasing_sigmoid, full_frames, mean_trajectory, p0=[0.1, 1.0, t_half_guess, (full_frames.max()-full_frames.min())/4], maxfev=10000)
-        ymin, ymax, t_half_fit, slope_fit = popt
-        fitted = decreasing_sigmoid(full_frames, *popt)
-        threshold = threshold_percentage_for_runoff
+    # ── Model fit ────────────────────────────────────────────────────────
+    fit_result = None
+    if fit_model is not None:
+        # Default fit range: from inhibitor application to end
+        start = fit_start_idx if fit_start_idx is not None else inhibitor_frame_index
+        end = fit_end_idx  # None → full array end (handled inside fit_inhibitor_model)
 
-        # Find the time when fitted curve crosses threshold
-        idxs = np.where(fitted <= threshold)[0]
-        if len(idxs) == 0:
-            time_fit = None
-        else:
-            # Get the actual time value at the threshold crossing
-            time_fit = full_frames[idxs[0]]
-        
-        if time_fit is not None:
-            ax.axvline(x=time_fit, color='g', linestyle='--', linewidth=1,
-                    label=r' $\tau_{INH}$'+ f' ~ {time_fit:.1f} min')
+        fit_result = fit_inhibitor_model(
+            full_frames, mean_trajectory,
+            model=fit_model,
+            fit_start_idx=start,
+            fit_end_idx=end,
+            runoff_fraction=runoff_fraction,
+        )
 
-        ax.axhline(y=threshold, color='orange', linestyle='--', linewidth=1,
-                    label=f'runoff threshold ~ {threshold:.1f}')
-        plt.plot(full_frames, fitted, '-', color='r', linewidth=1.5, label='Sigmoidal Fit')
+        if fit_result is not None:
+            model_labels = {'linear': 'Linear Fit', 'exponential': 'Exponential Fit',
+                            'heaviside': 'Heaviside Fit'}
+            label = model_labels.get(fit_result['model'], 'Fit')
 
-    # plot inhibitor line at zero
+            if show_fit:
+                ax.plot(full_frames[start:], fit_result['fitted_curve'][start:], '-',
+                        color='red', linewidth=1.5, label=label)
+
+            if show_runoff_time:
+                t_half = fit_result['t_half']
+                t_runoff = fit_result['t_runoff']
+                frac_pct = int(fit_result['runoff_fraction'] * 100)
+
+                ax.axvline(x=t_half, color='green', linestyle='--', linewidth=1,
+                           label=fr'$t_{{1/2}}$ ~ {t_half:.1f} min')
+                ax.axvline(x=t_runoff, color='orange', linestyle='--', linewidth=1,
+                           label=fr'$\tau_{{runoff}}$ ({frac_pct}%) ~ {t_runoff:.1f} min')
+
+            # Print fitted parameters
+            print(f'── {label} ──')
+            for k, v in fit_result['params'].items():
+                print(f'  {k}: {v:.4f}')
+            print(f'  t½:      {fit_result["t_half"]:.2f} min')
+            print(f'  τ_runoff ({frac_pct}%): {fit_result["t_runoff"]:.2f} min')
+
+    # Treatment line at t = 0
     if show_treatment_line:
         ax.axvline(x=0, color='black', linestyle='--', linewidth=1,
                     label=f'{treatment_label} Treatment')
+
     ax.set_xlabel("Time (min)", fontdict={'size': 16, 'color': 'black'})
     ax.set_ylabel(y_label, fontdict={'size': 16, 'color': 'black'})
     ax.tick_params(axis='both', which='major', labelsize=16, labelcolor='black', colors='black')
 
-    # # Set spines color to black
     for spine in ax.spines.values():
         spine.set_color('black')
         spine.set_linewidth(1.5)
 
     plt.ylim(ylims)
     plt.tight_layout()
-    ax.legend(fontsize=10)
-    plt.savefig(results_folder.joinpath('HT_'+plot_name+'.png'), dpi=600)
-    #plt.savefig(results_folder.joinpath('HT_'+plot_name+'.svg'), dpi=600)
+    legend = ax.legend(fontsize=10, loc='center left', bbox_to_anchor=(1.02, 0.5),
+                       framealpha=0.9, edgecolor='black')
+    plt.savefig(results_folder.joinpath('HT_'+plot_name+'.png'), dpi=600,
+                bbox_extra_artists=(legend,), bbox_inches='tight')
 
     plt.show()
 
-    return None
+    return fit_result
 
 
 def plot_multiple_inhibitors(full_frames_list,
@@ -231,16 +460,19 @@ def plot_multiple_inhibitors(full_frames_list,
                                 legend_labels=None,
                                 use_sem=True,
                                 show_individual_trajectories=True,
-                                threshold_percentage_for_runoff=0.2,
-                                use_sigmoidal_fit=False,
                                 ylims=(0, 1.5),
                                 xlims=None,
-                                show_runoff_time=True,
                                 y_label='Norm. Intensity',
                                 treatment_label='Inhibitor',
-                                show_treatment_line=True):
-    """
-    Plot multiple inhibitor datasets on the same axes.
+                                show_treatment_line=True,
+                                # ── Fitting parameters ──
+                                fit_model=None,
+                                fit_start_idx=None,
+                                fit_end_idx=None,
+                                show_fit=True,
+                                show_runoff_time=True,
+                                runoff_fraction=0.95):
+    """Plot multiple inhibitor datasets on the same axes with optional model fits.
 
     Parameters
     ----------
@@ -265,19 +497,30 @@ def plot_multiple_inhibitors(full_frames_list,
     use_sem : bool, optional
         If True, error bands show SEM; else SD.
     show_individual_trajectories : bool, optional
-    threshold_percentage_for_runoff : float, optional
-        Fraction of plateau to mark as "runoff" threshold (for τ lines).
-    use_sigmoidal_fit : bool, optional
-        If True, fit and overlay a decreasing sigmoid per dataset.
     ylims : tuple, optional
         (ymin, ymax) for the plot.
     xlims : tuple, optional
         (xmin, xmax) for the plot. If None, auto-scaled.
-    show_runoff_time : bool, optional
-        If True, draw horizontal threshold & vertical τ lines when fitting.
+    fit_model : str or None
+        Model to fit per dataset: 'linear', 'exponential', 'heaviside', or None.
+    fit_start_idx : int or None
+        Start index for fitting range. Defaults to inhibitor_frame_index.
+    fit_end_idx : int or None
+        End index for fitting range (inclusive). Defaults to last frame.
+    show_fit : bool
+        If True (default), overlay the fitted curve on the plot.
+    show_runoff_time : bool
+        If True (default), draw vertical lines for t½ and τ_runoff.
+    runoff_fraction : float
+        Fraction of total decay for run-off time definition (default 0.95).
+
+    Returns
+    -------
+    list of dict or None
+        One fit result dictionary per dataset (from fit_inhibitor_model),
+        or None for datasets where fitting was not performed or failed.
     """
     # Prepare output folder
-    #results_folder = Path(results_folder or Path('.')).joinpath(f"results_{plot_name}")
     results_folder.mkdir(parents=True, exist_ok=True)
 
     # Set up figure
@@ -287,6 +530,8 @@ def plot_multiple_inhibitors(full_frames_list,
     # Default color cycle
     if colors is None:
         colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+    fit_results = []
 
     # Loop over each dataset
     for idx, intensities in enumerate(intensities_normalized_list):
@@ -308,11 +553,16 @@ def plot_multiple_inhibitors(full_frames_list,
                         linestyle='-', color=color,
                         linewidth=0.3, alpha=0.4)
 
-        # Compute mean & error
+        # Compute mean & error (NaN-safe for artifact-removed frames)
         data = intensities[resp_idx, :]
-        mean_traj = np.mean(data, axis=0)
-        std_traj  = np.std(data, axis=0)
-        err_traj  = (std_traj / np.sqrt(data.shape[0])) if use_sem else std_traj
+        mean_traj = np.nanmean(data, axis=0)
+        std_traj  = np.nanstd(data, axis=0)
+        if use_sem:
+            n_valid = np.sum(np.isfinite(data), axis=0)
+            n_valid = np.maximum(n_valid, 1)
+            err_traj = std_traj / np.sqrt(n_valid)
+        else:
+            err_traj = std_traj
 
         # Determine legend text
         label_text = (legend_labels[idx]
@@ -328,37 +578,48 @@ def plot_multiple_inhibitors(full_frames_list,
                         mean_traj + err_traj,
                         color=color, alpha=0.2)
 
-        # Optional sigmoidal fit
-        if use_sigmoidal_fit:
-            def decreasing_sigmoid(t, ymin, ymax, t_half, slope):
-                return ymin + (ymax - ymin) / (1.0 + np.exp((t - t_half) / slope))
-            t_half_guess = inhibitor_frame_index + 3
-            try:
-                popt, _ = curve_fit(
-                    decreasing_sigmoid, frames, mean_traj,
-                    p0=[mean_traj.min(), mean_traj.max(), t_half_guess, (frames.max()-frames.min())/4],
-                    maxfev=5000
-                )
-                fitted = decreasing_sigmoid(frames, *popt)
-                ax.plot(frames, fitted, '--', color=color,
-                        linewidth=1.5, label=f'{label_text} Fit')
+        # ── Model fit ────────────────────────────────────────────────
+        if fit_model is not None:
+            start = fit_start_idx if fit_start_idx is not None else inhibitor_frame_index
+            end = fit_end_idx
+
+            fit_result = fit_inhibitor_model(
+                frames, mean_traj,
+                model=fit_model,
+                fit_start_idx=start,
+                fit_end_idx=end,
+                runoff_fraction=runoff_fraction,
+            )
+
+            if fit_result is not None:
+                model_labels = {'linear': 'Linear Fit', 'exponential': 'Exponential Fit',
+                                'heaviside': 'Heaviside Fit'}
+                fit_label = model_labels.get(fit_result['model'], 'Fit')
+
+                if show_fit:
+                    ax.plot(frames[start:], fit_result['fitted_curve'][start:], '--',
+                            color=color, linewidth=1.5,
+                            label=f'{label_text} {fit_label}')
 
                 if show_runoff_time:
-                    threshold = threshold_percentage_for_runoff
-                    idxs = np.where(fitted <= threshold)[0]
-                    if len(idxs) > 0:
-                        tau = frames[idxs[0]]
-                        ax.axvline(x=tau, color=color, linestyle=':', linewidth=1,
-                                   label=f'{label_text} τ~{tau:.1f}')
-                        ax.axhline(y=threshold, color=color, linestyle=':', linewidth=1)
-            except Exception:
-                # if fitting fails, just skip
-                pass
-        # if use_sigmoidal_fit is False and show_runoff_time is True:
-        # plot the threshold line
-        if show_runoff_time and not use_sigmoidal_fit:
-            threshold = threshold_percentage_for_runoff
-            ax.axhline(y=threshold, color='k', linestyle=':', linewidth=1,)
+                    t_half = fit_result['t_half']
+                    t_runoff = fit_result['t_runoff']
+                    frac_pct = int(runoff_fraction * 100)
+                    ax.axvline(x=t_half, color=color, linestyle=':', linewidth=1,
+                               label=f'{label_text} t½ ~ {t_half:.1f}')
+                    ax.axvline(x=t_runoff, color=color, linestyle='--', linewidth=1,
+                               label=f'{label_text} τ ({frac_pct}%) ~ {t_runoff:.1f}')
+
+                # Print fitted parameters
+                print(f'── {label_text}: {fit_label} ──')
+                for k, v in fit_result['params'].items():
+                    print(f'  {k}: {v:.4f}')
+                print(f'  t½:      {fit_result["t_half"]:.2f} min')
+                print(f'  τ_runoff ({frac_pct}%): {fit_result["t_runoff"]:.2f} min')
+
+            fit_results.append(fit_result)
+        else:
+            fit_results.append(None)
 
     # Plot treatment line at zero
     if show_treatment_line:
@@ -375,20 +636,26 @@ def plot_multiple_inhibitors(full_frames_list,
     ax.set_ylim(*ylims)
     if xlims is not None:
         ax.set_xlim(*xlims)
-    ax.legend(fontsize=10)
+
+    legend = ax.legend(fontsize=10, loc='center left', bbox_to_anchor=(1.02, 0.5),
+                       framealpha=0.9, edgecolor='black')
     plt.tight_layout()
 
     # Save & show
-    plt.savefig(results_folder.joinpath(f'HT_{plot_name}.png'), dpi=600)
-    #save svg
-    plt.savefig(results_folder.joinpath(f'HT_{plot_name}.svg'), dpi=600)
+    plt.savefig(results_folder.joinpath(f'HT_{plot_name}.png'), dpi=600,
+                bbox_extra_artists=(legend,), bbox_inches='tight')
+    plt.savefig(results_folder.joinpath(f'HT_{plot_name}.svg'), dpi=600,
+                bbox_extra_artists=(legend,), bbox_inches='tight')
     plt.show()
+
+    return fit_results
 
 
 
 def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_dir='', selected_field='spot_int_ch_0', use_sem=True, show_summary=True, max_percentage_threshold_after_treatment=None, frame_rate_min=1,
                      frame_interval_sec=60, simulation_dna_sequence=None, inhibitor_delay_time_seconds=60, list_tag_sequences=[HA_TAG], ki_simulation=0.04, ke_simulation=4.5,
-                     normalization_method='mean', percentile_range=(5, 95), verbose=False):
+                     normalization_method='mean', percentile_range=(5, 95), verbose=False,
+                     remove_frame_at_inhibitor_application=False):
     """
     Process inhibitor runoff experiment data.
     
@@ -434,6 +701,16 @@ def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_di
     verbose : bool, optional
         If True (default), print processing details and summary statistics.
         Set to False to suppress all print output.
+    remove_frame_at_inhibitor_application : bool, optional
+        If True, replaces the frame at inhibitor application with NaN
+        to remove the focus artifact (default False). During live-cell
+        inhibitor experiments, the physical act of adding the drug
+        (e.g., pipetting media into the dish) often causes cells to
+        briefly go out of focus. This produces a transient intensity
+        dip/spike at the treatment frame that is not biological but
+        rather a mechanical artifact. Setting this flag to True replaces
+        that single frame with NaN, which is then gracefully skipped
+        during mean calculation, error estimation, and model fitting.
         
     Returns
     -------
@@ -513,6 +790,21 @@ def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_di
             intensities_normalized = (intensities_normalized - global_low) / (global_high - global_low)
         if verbose:
             print(f'Global percentile normalization applied (P{percentile_range[0]}={global_low:.4f}, P{percentile_range[1]}={global_high:.4f})')
+
+    # ── Remove artifact frame at inhibitor application ────────────────
+    # During live-cell experiments, adding the inhibitor (e.g., pipetting
+    # harringtonine into the dish) mechanically perturbs the sample,
+    # causing cells to transiently go out of focus. This creates an
+    # artificial intensity dip at the treatment frame that does not
+    # reflect actual translational run-off. Replacing this frame with
+    # NaN removes the artifact while preserving the time axis, so the
+    # mean, SEM, and model fits are not biased by the focus disturbance.
+    if remove_frame_at_inhibitor_application:
+        intensities_normalized[:, inhibitor_frame_index] = np.nan
+        array_particles[:, inhibitor_frame_index] = np.nan
+        if verbose:
+            print(f'Removed frame at inhibitor application '
+                  f'(index {inhibitor_frame_index}) → replaced with NaN')
 
     treatment_start_index = inhibitor_frame_index #np.argmin(np.abs(full_frames - inhibitor_frame_index))
     non_responding_indices = []  # average post-treatment is not decreasing below the threshold

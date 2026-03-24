@@ -24,7 +24,6 @@ REPORTER_PLASMID_NAME_MAPPING = {
     'pNZ389': '2GFPuv-4mCh',     # 2x mGFPuv, 4x mCh
     'pNZ388': '1GFPuv-5mCh',     # 1x mGFPuv, 5x mCh
 
-
     # XBP1 variants - C-terminal XBP1(S255A)
     'pRS038': '4sfGFP-2mCh-Xbp1',    # 4x sfGFP, 2x mCh, Xbp1(S255A) at C-term
     'pRS039': '4GFPuv-2mCh-Xbp1',   # 4x mGFPuv, 2x mCh, Xbp1(S255A) at C-term

@@ -34,22 +34,25 @@ Author: Rhiannon Sears, Luis Aguilera
 Date: 2024-2025
 """
 
+# Standard library
 import io
+from itertools import combinations
+from pathlib import Path
+
+# Third-party
+import cv2
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib_scalebar.scalebar import ScaleBar
-from scipy.ndimage import gaussian_filter
-from scipy import stats  # For statistical tests
-from skimage import exposure
-from pathlib import Path
 from PIL import Image
-from itertools import combinations  # For pairwise comparisons
-import cv2
-import seaborn as sns  # For box/swarm plots
-import tifffile  # For TIFF export
+import seaborn as sns
+from scipy import stats
+from scipy.ndimage import gaussian_filter
+from skimage import exposure
+import tifffile
 
-# Try to import microlive colormaps
+# Local (optional)
 try:
     from microlive.imports import green_colormap, magenta_colormap
 except ImportError:

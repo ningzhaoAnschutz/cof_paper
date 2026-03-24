@@ -38,6 +38,7 @@ out-*
 masks_*
 mask_*
 tests/
+test*
 test*/
 filtered_images_*/
 database*
