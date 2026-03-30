@@ -384,7 +384,7 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
     ax.fill_between(full_frames,
                     mean_trajectory - err_trajectory,
                     mean_trajectory + err_trajectory,
-                    color=colors[0], alpha=0.07)
+                    color=colors[0], alpha=0.2)
 
     # TASEP simulation overlay (if provided)
     if mean_intensity_ssa_inh is not None and err_intensity_ssa_inh is not None:
