@@ -173,6 +173,8 @@ def fit_inhibitor_model(x_data, y_data, model='exponential',
             'fitted_curve': np.ndarray – fitted y-values over the FULL x_data range
             't_half'      : float – half-time (time for 50 % decay)
             't_runoff'    : float – run-off time (time for `runoff_fraction` decay)
+            'R2'          : float – coefficient of determination (goodness of fit)
+            'RSS'         : float – residual sum of squares
         Returns None if fitting fails.
     """
     x_data = np.asarray(x_data, dtype=float)
@@ -281,6 +283,16 @@ def fit_inhibitor_model(x_data, y_data, model='exponential',
                   f'Choose from: linear, exponential, heaviside.')
             return None
 
+        # Goodness-of-fit metrics (computed on the fitting window only)
+        n_params = len(popt)
+        n_data = len(y_fit)
+        dof = n_data - n_params
+        y_pred_fit = fitted_full[i0:i1][valid]
+        ss_res = np.sum((y_fit - y_pred_fit) ** 2)
+        ss_tot = np.sum((y_fit - np.mean(y_fit)) ** 2)
+        r_squared = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
+        chi2_red = ss_res / dof if dof > 0 else np.nan
+
         result = {
             'model': model,
             'params': params,
@@ -288,6 +300,12 @@ def fit_inhibitor_model(x_data, y_data, model='exponential',
             't_half': t_half,
             't_runoff': t_runoff,
             'runoff_fraction': runoff_fraction,
+            'R2': r_squared,
+            'RSS': ss_res,
+            'chi2_reduced': chi2_red,
+            'dof': dof,
+            'n_data': n_data,
+            'n_params': n_params,
         }
         return result
 
@@ -435,6 +453,11 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
                 print(f'  {k}: {v:.4f}')
             print(f'  t½:      {fit_result["t_half"]:.2f} min')
             print(f'  τ_runoff ({frac_pct}%): {fit_result["t_runoff"]:.2f} min')
+            print(f'  ── Goodness of fit ──')
+            print(f'  n_data:  {fit_result["n_data"]},  n_params: {fit_result["n_params"]},  dof: {fit_result["dof"]}')
+            print(f'  RSS:     {fit_result["RSS"]:.4e}')
+            print(f'  χ²_red:  {fit_result["chi2_reduced"]:.4e}')
+            print(f'  R²:      {fit_result["R2"]:.4f}')
 
     # Treatment line at t = 0
     if show_treatment_line:
@@ -634,6 +657,11 @@ def plot_multiple_inhibitors(full_frames_list,
                     print(f'  {k}: {v:.4f}')
                 print(f'  t½:      {fit_result["t_half"]:.2f} min')
                 print(f'  τ_runoff ({frac_pct}%): {fit_result["t_runoff"]:.2f} min')
+                print(f'  ── Goodness of fit ──')
+                print(f'  n_data:  {fit_result["n_data"]},  n_params: {fit_result["n_params"]},  dof: {fit_result["dof"]}')
+                print(f'  RSS:     {fit_result["RSS"]:.4e}')
+                print(f'  χ²_red:  {fit_result["chi2_reduced"]:.4e}')
+                print(f'  R²:      {fit_result["R2"]:.4f}')
 
             fit_results.append(fit_result)
         else:
