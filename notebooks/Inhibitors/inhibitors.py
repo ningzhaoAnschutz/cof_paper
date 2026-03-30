@@ -380,7 +380,7 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
             err_trajectory = std_trajectory
 
     ax.plot(full_frames, mean_trajectory, 'o-',
-            color=colors[0], linewidth=1, label='Experimental (mean)', markersize=7)
+            color=colors[0], linewidth=1, label='Experimental (mean)', markersize=6)
     ax.fill_between(full_frames,
                     mean_trajectory - err_trajectory,
                     mean_trajectory + err_trajectory,
@@ -589,7 +589,7 @@ def plot_multiple_inhibitors(full_frames_list,
 
         # Plot mean ± error band
         ax.plot(frames, mean_traj, 'o-', color=color,
-                linewidth=1.5, markersize=6,
+                linewidth=1, markersize=6,
                 label=label_text)
         ax.fill_between(frames,
                         mean_traj - err_traj,
