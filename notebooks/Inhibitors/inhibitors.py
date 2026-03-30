@@ -331,14 +331,8 @@ def fit_inhibitor_model(x_data, y_data, err_data=None, model='exponential',
             't_half': t_half,
             't_runoff': t_runoff,
             'runoff_fraction': runoff_fraction,
-            'R2': r_squared,
-            'RSS': ss_res,
-            'chi2': chi2,
             'chi2_reduced': chi2_red,
             'dof': dof,
-            'n_data': n_data,
-            'n_params': n_params,
-            'weighted': err_fit is not None,
         }
         return result
 
@@ -487,12 +481,8 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
                 print(f'  {k}: {v:.4f}')
             print(f'  t½:      {fit_result["t_half"]:.2f} min')
             print(f'  τ_runoff ({frac_pct}%): {fit_result["t_runoff"]:.2f} min')
-            print(f'  ── Goodness of fit {"(weighted)" if fit_result["weighted"] else "(unweighted)"} ──')
-            print(f'  n_data:  {fit_result["n_data"]},  n_params: {fit_result["n_params"]},  dof: {fit_result["dof"]}')
-            print(f'  RSS:     {fit_result["RSS"]:.4e}')
-            print(f'  χ²:      {fit_result["chi2"]:.4e}')
-            print(f'  χ²_red:  {fit_result["chi2_reduced"]:.4e}')
-            print(f'  R²:      {fit_result["R2"]:.4f}')
+            chi2r = fit_result['chi2_reduced']
+            print(f'  χ²_red:  {chi2r:.4f}  (dof={fit_result["dof"]})')
 
     # Treatment line at t = 0
     if show_treatment_line:
@@ -693,12 +683,8 @@ def plot_multiple_inhibitors(full_frames_list,
                     print(f'  {k}: {v:.4f}')
                 print(f'  t½:      {fit_result["t_half"]:.2f} min')
                 print(f'  τ_runoff ({frac_pct}%): {fit_result["t_runoff"]:.2f} min')
-                print(f'  ── Goodness of fit {"(weighted)" if fit_result["weighted"] else "(unweighted)"} ──')
-                print(f'  n_data:  {fit_result["n_data"]},  n_params: {fit_result["n_params"]},  dof: {fit_result["dof"]}')
-                print(f'  RSS:     {fit_result["RSS"]:.4e}')
-                print(f'  χ²:      {fit_result["chi2"]:.4e}')
-                print(f'  χ²_red:  {fit_result["chi2_reduced"]:.4e}')
-                print(f'  R²:      {fit_result["R2"]:.4f}')
+                chi2r = fit_result['chi2_reduced']
+                print(f'  χ²_red:  {chi2r:.4f}  (dof={fit_result["dof"]})')
 
             fit_results.append(fit_result)
         else:
