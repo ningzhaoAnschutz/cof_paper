@@ -301,11 +301,13 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
                    responding_indices=None, figsize=(6, 3), time_array_min=None,
                    mean_intensity_ssa_inh=None, err_intensity_ssa_inh=None,
                    use_sem=True, show_individual_trajectories=True,
-                   ylims=(0, 1.5), y_label='Norm. Intensity',
+                   ylims=(0, 1.5), xlims=None,
+                   y_label='Norm. Intensity',
                    treatment_label='Inhibitor', show_treatment_line=True,
                    # ── New fitting parameters ──
                    fit_model=None, fit_start_idx=None, fit_end_idx=None,
                    show_fit=True, show_runoff_time=True,
+                   colors=None,
                    runoff_fraction=0.95):
     """Plot inhibitor run-off data with optional model fit.
 
@@ -329,12 +331,21 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
         If True (default), draw vertical lines for t½ and τ_runoff.
     runoff_fraction : float
         Fraction of total decay for run-off time definition (default 0.95).
+    colors : list of str or None
+        List of colors for the trajectories. If None, default colors are used.
 
     Returns
     -------
     dict or None
         The fit result dictionary from fit_inhibitor_model, or None.
     """
+    if colors is None:
+        colors = [ 'blue']
+
+    # if colors is not a list, make it a list
+    if not isinstance(colors, list):
+        colors = [colors]
+
     if results_folder is None:
         results_folder = Path(current_dir).joinpath('results_HT')
         results_folder.mkdir(exist_ok=True)
@@ -369,11 +380,11 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
             err_trajectory = std_trajectory
 
     ax.plot(full_frames, mean_trajectory, 'o-',
-            color='blue', linewidth=1, label='Experimental (mean)', markersize=7)
+            color=colors[0], linewidth=1, label='Experimental (mean)', markersize=7)
     ax.fill_between(full_frames,
                     mean_trajectory - err_trajectory,
                     mean_trajectory + err_trajectory,
-                    color='blue', alpha=0.07)
+                    color=colors[0], alpha=0.07)
 
     # TASEP simulation overlay (if provided)
     if mean_intensity_ssa_inh is not None and err_intensity_ssa_inh is not None:
@@ -438,10 +449,14 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
         spine.set_linewidth(1.5)
 
     plt.ylim(ylims)
+    if xlims is not None:
+        plt.xlim(xlims)
     plt.tight_layout()
     legend = ax.legend(fontsize=10, loc='center left', bbox_to_anchor=(1.02, 0.5),
                        framealpha=0.9, edgecolor='black')
     plt.savefig(results_folder.joinpath('HT_'+plot_name+'.png'), dpi=600,
+                bbox_extra_artists=(legend,), bbox_inches='tight')
+    plt.savefig(results_folder.joinpath('HT_'+plot_name+'.svg'), dpi=600,
                 bbox_extra_artists=(legend,), bbox_inches='tight')
 
     plt.show()
@@ -521,6 +536,8 @@ def plot_multiple_inhibitors(full_frames_list,
         or None for datasets where fitting was not performed or failed.
     """
     # Prepare output folder
+    if results_folder is None:
+        results_folder = Path(current_dir).joinpath('results_HT')
     results_folder.mkdir(parents=True, exist_ok=True)
 
     # Set up figure
@@ -597,8 +614,8 @@ def plot_multiple_inhibitors(full_frames_list,
                 fit_label = model_labels.get(fit_result['model'], 'Fit')
 
                 if show_fit:
-                    ax.plot(frames[start:], fit_result['fitted_curve'][start:], '--',
-                            color=color, linewidth=1.5,
+                    ax.plot(frames[start:], fit_result['fitted_curve'][start:], '-',
+                            color='red', linewidth=1.5,
                             label=f'{label_text} {fit_label}')
 
                 if show_runoff_time:
