@@ -142,7 +142,7 @@ def _heaviside_model(x, A, T, C):
 
 # ── Fitting function ─────────────────────────────────────────────────────────
 
-def fit_inhibitor_model(x_data, y_data, model='exponential',
+def fit_inhibitor_model(x_data, y_data, err_data=None, model='exponential',
                         fit_start_idx=None, fit_end_idx=None,
                         runoff_fraction=0.95):
     """Fit inhibitor run-off data to a decay model.
@@ -153,6 +153,11 @@ def fit_inhibitor_model(x_data, y_data, model='exponential',
         Time array (e.g., time in minutes, recentered so 0 = inhibitor).
     y_data : np.ndarray
         Mean intensity trajectory (1D).
+    err_data : np.ndarray or None
+        Per-point measurement uncertainty (e.g., SEM from individual cells).
+        Same length as y_data. When provided, curve_fit performs weighted
+        least-squares and χ² is computed as Σ[(y-f)²/σ²].
+        When None, unweighted fitting is used.
     model : str
         One of 'linear', 'exponential', 'heaviside'.
     fit_start_idx : int or None
@@ -173,12 +178,17 @@ def fit_inhibitor_model(x_data, y_data, model='exponential',
             'fitted_curve': np.ndarray – fitted y-values over the FULL x_data range
             't_half'      : float – half-time (time for 50 % decay)
             't_runoff'    : float – run-off time (time for `runoff_fraction` decay)
-            'R2'          : float – coefficient of determination (goodness of fit)
+            'R2'          : float – coefficient of determination
             'RSS'         : float – residual sum of squares
+            'chi2'        : float – chi-squared (weighted if err_data provided)
+            'chi2_reduced': float – χ²/dof
+            'dof'         : int   – degrees of freedom (n_data − n_params)
         Returns None if fitting fails.
     """
     x_data = np.asarray(x_data, dtype=float)
     y_data = np.asarray(y_data, dtype=float)
+    if err_data is not None:
+        err_data = np.asarray(err_data, dtype=float)
 
     # Default range: full array
     i0 = fit_start_idx if fit_start_idx is not None else 0
@@ -186,11 +196,21 @@ def fit_inhibitor_model(x_data, y_data, model='exponential',
 
     x_fit = x_data[i0:i1]
     y_fit = y_data[i0:i1]
+    err_fit = err_data[i0:i1] if err_data is not None else None
 
     # Remove NaN values (e.g., from artifact removal at inhibitor frame)
     valid = np.isfinite(x_fit) & np.isfinite(y_fit)
+    if err_fit is not None:
+        valid = valid & np.isfinite(err_fit)
     x_fit = x_fit[valid]
     y_fit = y_fit[valid]
+    if err_fit is not None:
+        err_fit = err_fit[valid]
+        # Replace zero uncertainties with a small value to avoid division by zero
+        err_fit = np.where(err_fit == 0, np.min(err_fit[err_fit > 0]) * 0.1 if np.any(err_fit > 0) else 1e-10, err_fit)
+        sigma_kwarg = {'sigma': err_fit, 'absolute_sigma': True}
+    else:
+        sigma_kwarg = {}
 
     if len(x_fit) < 3:
         print('fit_inhibitor_model: not enough data points to fit.')
@@ -201,7 +221,7 @@ def fit_inhibitor_model(x_data, y_data, model='exponential',
     try:
         if model == 'linear':
             # y = a*x + b
-            popt, pcov = curve_fit(_linear_model, x_fit, y_fit)
+            popt, pcov = curve_fit(_linear_model, x_fit, y_fit, **sigma_kwarg)
             a, b = popt
             perr = np.sqrt(np.diag(pcov))
             fitted_full = _linear_model(x_data, *popt)
@@ -234,6 +254,7 @@ def fit_inhibitor_model(x_data, y_data, model='exponential',
                 p0=[A0, tau0, C0],
                 bounds=([0, 1e-6, -np.inf], [np.inf, np.inf, np.inf]),
                 maxfev=50000,
+                **sigma_kwarg,
             )
             A, tau, C = popt
             perr = np.sqrt(np.diag(pcov))
@@ -265,6 +286,7 @@ def fit_inhibitor_model(x_data, y_data, model='exponential',
                 p0=[A0, T0, C0],
                 bounds=([0, 1e-6, -np.inf], [np.inf, np.inf, np.inf]),
                 maxfev=50000,
+                **sigma_kwarg,
             )
             A, T, C = popt
             perr = np.sqrt(np.diag(pcov))
@@ -288,10 +310,19 @@ def fit_inhibitor_model(x_data, y_data, model='exponential',
         n_data = len(y_fit)
         dof = n_data - n_params
         y_pred_fit = fitted_full[i0:i1][valid]
-        ss_res = np.sum((y_fit - y_pred_fit) ** 2)
-        ss_tot = np.sum((y_fit - np.mean(y_fit)) ** 2)
+        residuals = y_fit - y_pred_fit
+
+        # Unweighted sums of squares (always computed)
+        ss_res = float(np.sum(residuals ** 2))
+        ss_tot = float(np.sum((y_fit - np.mean(y_fit)) ** 2))
         r_squared = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
-        chi2_red = ss_res / dof if dof > 0 else np.nan
+
+        # Chi-squared: weighted if err_data provided, unweighted otherwise
+        if err_fit is not None:
+            chi2 = float(np.sum((residuals / err_fit) ** 2))
+        else:
+            chi2 = ss_res  # equivalent to unweighted χ²
+        chi2_red = chi2 / dof if dof > 0 else np.nan
 
         result = {
             'model': model,
@@ -302,10 +333,12 @@ def fit_inhibitor_model(x_data, y_data, model='exponential',
             'runoff_fraction': runoff_fraction,
             'R2': r_squared,
             'RSS': ss_res,
+            'chi2': chi2,
             'chi2_reduced': chi2_red,
             'dof': dof,
             'n_data': n_data,
             'n_params': n_params,
+            'weighted': err_fit is not None,
         }
         return result
 
@@ -421,6 +454,7 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
 
         fit_result = fit_inhibitor_model(
             full_frames, mean_trajectory,
+            err_data=err_trajectory,
             model=fit_model,
             fit_start_idx=start,
             fit_end_idx=end,
@@ -453,9 +487,10 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
                 print(f'  {k}: {v:.4f}')
             print(f'  t½:      {fit_result["t_half"]:.2f} min')
             print(f'  τ_runoff ({frac_pct}%): {fit_result["t_runoff"]:.2f} min')
-            print(f'  ── Goodness of fit ──')
+            print(f'  ── Goodness of fit {"(weighted)" if fit_result["weighted"] else "(unweighted)"} ──')
             print(f'  n_data:  {fit_result["n_data"]},  n_params: {fit_result["n_params"]},  dof: {fit_result["dof"]}')
             print(f'  RSS:     {fit_result["RSS"]:.4e}')
+            print(f'  χ²:      {fit_result["chi2"]:.4e}')
             print(f'  χ²_red:  {fit_result["chi2_reduced"]:.4e}')
             print(f'  R²:      {fit_result["R2"]:.4f}')
 
@@ -626,6 +661,7 @@ def plot_multiple_inhibitors(full_frames_list,
 
             fit_result = fit_inhibitor_model(
                 frames, mean_traj,
+                err_data=err_traj,
                 model=fit_model,
                 fit_start_idx=start,
                 fit_end_idx=end,
@@ -657,9 +693,10 @@ def plot_multiple_inhibitors(full_frames_list,
                     print(f'  {k}: {v:.4f}')
                 print(f'  t½:      {fit_result["t_half"]:.2f} min')
                 print(f'  τ_runoff ({frac_pct}%): {fit_result["t_runoff"]:.2f} min')
-                print(f'  ── Goodness of fit ──')
+                print(f'  ── Goodness of fit {"(weighted)" if fit_result["weighted"] else "(unweighted)"} ──')
                 print(f'  n_data:  {fit_result["n_data"]},  n_params: {fit_result["n_params"]},  dof: {fit_result["dof"]}')
                 print(f'  RSS:     {fit_result["RSS"]:.4e}')
+                print(f'  χ²:      {fit_result["chi2"]:.4e}')
                 print(f'  χ²_red:  {fit_result["chi2_reduced"]:.4e}')
                 print(f'  R²:      {fit_result["R2"]:.4f}')
 
