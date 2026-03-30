@@ -414,7 +414,7 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
 
     # Mean ± error (NaN-safe for artifact-removed frames)
     if responding_indices:
-        mean_trajectory = np.nanmedian(intensities_normalized[responding_indices, :], axis=0)
+        mean_trajectory = np.nanmean(intensities_normalized[responding_indices, :], axis=0)
         std_trajectory = np.nanstd(intensities_normalized[responding_indices, :], axis=0)
         if use_sem:
             # Count non-NaN cells per frame for correct SEM
@@ -621,7 +621,7 @@ def plot_multiple_inhibitors(full_frames_list,
 
         # Compute mean & error (NaN-safe for artifact-removed frames)
         data = intensities[resp_idx, :]
-        mean_traj = np.nanmedian(data, axis=0)
+        mean_traj = np.nanmean(data, axis=0)
         std_traj  = np.nanstd(data, axis=0)
         if use_sem:
             n_valid = np.sum(np.isfinite(data), axis=0)
