@@ -414,15 +414,16 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
                             'heaviside': 'Heaviside Fit'}
             label = model_labels.get(fit_result['model'], 'Fit')
 
+
+
+            t_half = fit_result['t_half']
+            t_runoff = fit_result['t_runoff']
+            frac_pct = int(fit_result['runoff_fraction'] * 100)
+
             if show_fit:
                 ax.plot(full_frames[start:], fit_result['fitted_curve'][start:], '-',
                         color='red', linewidth=1.5, label=label)
-
             if show_runoff_time:
-                t_half = fit_result['t_half']
-                t_runoff = fit_result['t_runoff']
-                frac_pct = int(fit_result['runoff_fraction'] * 100)
-
                 ax.axvline(x=t_half, color='green', linestyle='--', linewidth=1,
                            label=fr'$t_{{1/2}}$ ~ {t_half:.1f} min')
                 ax.axvline(x=t_runoff, color='orange', linestyle='--', linewidth=1,
@@ -612,16 +613,16 @@ def plot_multiple_inhibitors(full_frames_list,
                 model_labels = {'linear': 'Linear Fit', 'exponential': 'Exponential Fit',
                                 'heaviside': 'Heaviside Fit'}
                 fit_label = model_labels.get(fit_result['model'], 'Fit')
-
+                t_half = fit_result['t_half']
+                t_runoff = fit_result['t_runoff']
+                frac_pct = int(runoff_fraction * 100)
+                
                 if show_fit:
                     ax.plot(frames[start:], fit_result['fitted_curve'][start:], '-',
                             color='red', linewidth=1.5,
                             label=f'{label_text} {fit_label}')
 
                 if show_runoff_time:
-                    t_half = fit_result['t_half']
-                    t_runoff = fit_result['t_runoff']
-                    frac_pct = int(runoff_fraction * 100)
                     ax.axvline(x=t_half, color=color, linestyle=':', linewidth=1,
                                label=f'{label_text} t½ ~ {t_half:.1f}')
                     ax.axvline(x=t_runoff, color=color, linestyle='--', linewidth=1,
