@@ -72,3 +72,4 @@ kk_*
 *.csv
 *kk_old/
 *.npz
+*.docx
