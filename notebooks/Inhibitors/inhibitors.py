@@ -353,7 +353,9 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
                    fit_model=None, fit_start_idx=None, fit_end_idx=None,
                    show_fit=True, show_runoff_time=True,
                    colors=None,
-                   runoff_fraction=0.95):
+                   runoff_fraction=0.95,
+                   remove_background_intensity=False,
+                   background_frames=10):
     """Plot inhibitor run-off data with optional model fit.
 
     Parameters
@@ -378,6 +380,13 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
         Fraction of total decay for run-off time definition (default 0.95).
     colors : list of str or None
         List of colors for the trajectories. If None, default colors are used.
+    remove_background_intensity : bool
+        If True, subtract the background intensity (estimated from the last
+        `background_frames` frames within the xlims range) and rescale each
+        trace to [0, 1] using the pre-treatment mean. Default False.
+    background_frames : int
+        Number of frames at the end of the experiment (or xlims window) used
+        to estimate background intensity. Default 10.
 
     Returns
     -------
@@ -404,6 +413,24 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
 
     if responding_indices is None:
         responding_indices = list(range(len(intensities_normalized)))
+
+    # ── Background removal and 0-1 rescaling ────────────────────────
+    if remove_background_intensity:
+        # Determine the end frame index from xlims or use all data
+        if xlims is not None:
+            end_mask = full_frames <= xlims[1]
+            end_idx = int(np.sum(end_mask))
+        else:
+            end_idx = intensities_normalized.shape[1]
+        bg_start = max(0, end_idx - background_frames)
+        # Estimate background from the MEAN trajectory (robust to per-trace noise)
+        resp_data = intensities_normalized[responding_indices, :]
+        mean_for_bg = np.nanmean(resp_data[:, bg_start:end_idx])
+        intensities_normalized = intensities_normalized - mean_for_bg
+        # Rescale so the mean pre-treatment intensity = 1
+        mean_pre = np.nanmean(resp_data[:, :inhibitor_frame_index] - mean_for_bg)
+        if mean_pre != 0:
+            intensities_normalized = intensities_normalized / mean_pre
 
     # Individual trajectories
     if show_individual_trajectories:
@@ -535,7 +562,9 @@ def plot_multiple_inhibitors(full_frames_list,
                                 fit_end_idx=None,
                                 show_fit=True,
                                 show_runoff_time=True,
-                                runoff_fraction=0.95):
+                                runoff_fraction=0.95,
+                                remove_background_intensity=False,
+                                background_frames=10):
     """Plot multiple inhibitor datasets on the same axes with optional model fits.
 
     Parameters
@@ -577,6 +606,13 @@ def plot_multiple_inhibitors(full_frames_list,
         If True (default), draw vertical lines for t½ and τ_runoff.
     runoff_fraction : float
         Fraction of total decay for run-off time definition (default 0.95).
+    remove_background_intensity : bool
+        If True, subtract the background intensity (estimated from the last
+        `background_frames` frames within the xlims range) and rescale each
+        trace to [0, 1] using the pre-treatment mean. Default False.
+    background_frames : int
+        Number of frames at the end of the experiment (or xlims window) used
+        to estimate background intensity. Default 10.
 
     Returns
     -------
@@ -611,6 +647,24 @@ def plot_multiple_inhibitors(full_frames_list,
         resp_idx = (responding_indices_list[idx]
                     if (responding_indices_list and idx < len(responding_indices_list))
                     else list(range(intensities.shape[0])))
+
+        # ── Background removal and 0-1 rescaling ────────────────
+        if remove_background_intensity:
+            intensities = intensities.copy()
+            if xlims is not None:
+                end_mask = frames <= xlims[1]
+                end_idx = int(np.sum(end_mask))
+            else:
+                end_idx = intensities.shape[1]
+            bg_start = max(0, end_idx - background_frames)
+            # Estimate background from the MEAN trajectory (robust to per-trace noise)
+            resp_data = intensities[resp_idx, :]
+            mean_for_bg = np.nanmean(resp_data[:, bg_start:end_idx])
+            intensities = intensities - mean_for_bg
+            # Rescale so the mean pre-treatment intensity = 1
+            mean_pre = np.nanmean(resp_data[:, :inhibitor_frame_index] - mean_for_bg)
+            if mean_pre != 0:
+                intensities = intensities / mean_pre
 
         # Plot individual trajectories
         if show_individual_trajectories:
