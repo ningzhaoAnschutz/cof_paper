@@ -224,7 +224,7 @@ def fit_inhibitor_model(x_data, y_data, err_data=None, model='exponential',
             popt, pcov = curve_fit(_linear_model, x_fit, y_fit, **sigma_kwarg)
             a, b = popt
             perr = np.sqrt(np.diag(pcov))
-            fitted_full = _linear_model(x_data, *popt)
+            fitted_full = np.maximum(_linear_model(x_data, *popt), 0.0)
 
             # Derived quantities
             # Estimate actual baseline from last 20% of data
@@ -233,7 +233,7 @@ def fit_inhibitor_model(x_data, y_data, err_data=None, model='exponential',
             I0 = b  # intensity at x = 0 (fitted intercept)
             if a != 0 and I0 != Iss:
                 t_half = (I0 - (I0 + Iss) / 2.0) / (-a)   # when y = midpoint
-                t_runoff = (I0 - Iss) / (-a)                # when y = baseline
+                t_runoff = 2.0 * t_half
             else:
                 t_half = np.inf
                 t_runoff = np.inf
@@ -262,7 +262,7 @@ def fit_inhibitor_model(x_data, y_data, err_data=None, model='exponential',
 
             # Derived quantities
             t_half = tau * np.log(2)
-            t_runoff = -tau * np.log(1.0 - runoff_fraction)
+            t_runoff = 2.0 * t_half
 
             params = {'A (amplitude)': A, 'tau (time constant)': tau,
                       'C (baseline)': C,
@@ -294,7 +294,7 @@ def fit_inhibitor_model(x_data, y_data, err_data=None, model='exponential',
 
             # Derived quantities
             t_half = T / 2.0
-            t_runoff = T  # T IS the run-off time for this model
+            t_runoff = 2.0 * t_half  # = T (the full dwell time)
 
             params = {'A (amplitude)': A, 'T (dwell/run-off time)': T,
                       'C (baseline)': C,
@@ -355,7 +355,9 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
                    colors=None,
                    runoff_fraction=0.95,
                    remove_background_intensity=False,
-                   background_frames=10):
+                   background_frames=10,
+                   show_background_line=False,
+                   show_zero_y_axis=False):
     """Plot inhibitor run-off data with optional model fit.
 
     Parameters
@@ -387,6 +389,12 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
     background_frames : int
         Number of frames at the end of the experiment (or xlims window) used
         to estimate background intensity. Default 10.
+    show_background_line : bool
+        If True, draw a horizontal dashed line at the estimated background
+        intensity level. Default False. Only drawn when
+        remove_background_intensity is True.
+    show_zero_y_axis : bool
+        If True, draw a horizontal dashed line at y = 0. Default False.
 
     Returns
     -------
@@ -415,6 +423,7 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
         responding_indices = list(range(len(intensities_normalized)))
 
     # ── Background removal and 0-1 rescaling ────────────────────────
+    _bg_raw_value = None  # store for optional dashed line
     if remove_background_intensity:
         # Determine the end frame index from xlims or use all data
         if xlims is not None:
@@ -426,6 +435,7 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
         # Estimate background from the MEAN trajectory (robust to per-trace noise)
         resp_data = intensities_normalized[responding_indices, :]
         mean_for_bg = np.nanmean(resp_data[:, bg_start:end_idx])
+        _bg_raw_value = mean_for_bg  # save original background value
         intensities_normalized = intensities_normalized - mean_for_bg
         # Rescale so the mean pre-treatment intensity = 1
         mean_pre = np.nanmean(resp_data[:, :inhibitor_frame_index] - mean_for_bg)
@@ -500,14 +510,14 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
                 ax.axvline(x=t_half, color='green', linestyle='--', linewidth=1,
                            label=fr'$t_{{1/2}}$ ~ {t_half:.1f} min')
                 ax.axvline(x=t_runoff, color='orange', linestyle='--', linewidth=1,
-                           label=fr'$\tau_{{runoff}}$ ({frac_pct}%) ~ {t_runoff:.1f} min')
+                           label=fr'$\tau_{{runoff}}$ (2$\times t_{{1/2}}$) ~ {t_runoff:.1f} min')
 
             # Print fitted parameters
             print(f'── {label} ──')
             for k, v in fit_result['params'].items():
                 print(f'  {k}: {v:.4f}')
             print(f'  t½:      {fit_result["t_half"]:.2f} min')
-            print(f'  τ_runoff ({frac_pct}%): {fit_result["t_runoff"]:.2f} min')
+            print(f'  τ_runoff (2×t½): {fit_result["t_runoff"]:.2f} min')
             chi2r = fit_result['chi2_reduced']
             print(f'  χ²_red:  {chi2r:.4f}  (dof={fit_result["dof"]})')
 
@@ -523,6 +533,33 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
     for spine in ax.spines.values():
         spine.set_color('black')
         spine.set_linewidth(1.5)
+
+    # ── Optional dashed reference lines ───────────────────────────────
+    if show_zero_y_axis:
+        ax.axhline(y=0, color='black', linestyle='--', linewidth=0.8,
+                    label='y = 0')
+    if show_background_line and _bg_raw_value is not None:
+        # After rescaling, bg maps to 0 and pre-treatment maps to 1,
+        # so the original bg in rescaled units is 0.
+        # But if remove_background_intensity is False the raw value is shown.
+        if remove_background_intensity:
+            ax.axhline(y=0, color='gray', linestyle=':', linewidth=1,
+                        label=f'Background ({_bg_raw_value:.1f} raw)')
+        else:
+            ax.axhline(y=_bg_raw_value, color='gray', linestyle=':', linewidth=1,
+                        label=f'Background = {_bg_raw_value:.1f}')
+    elif show_background_line and _bg_raw_value is None:
+        # Estimate background even when remove_background_intensity is off
+        if xlims is not None:
+            end_mask = full_frames <= xlims[1]
+            end_idx = int(np.sum(end_mask))
+        else:
+            end_idx = intensities_normalized.shape[1]
+        bg_start = max(0, end_idx - background_frames)
+        resp_data = intensities_normalized[responding_indices, :]
+        _bg_display = np.nanmean(resp_data[:, bg_start:end_idx])
+        ax.axhline(y=_bg_display, color='gray', linestyle=':', linewidth=1,
+                    label=f'Background = {_bg_display:.1f}')
 
     plt.ylim(ylims)
     if xlims is not None:
@@ -564,7 +601,9 @@ def plot_multiple_inhibitors(full_frames_list,
                                 show_runoff_time=True,
                                 runoff_fraction=0.95,
                                 remove_background_intensity=False,
-                                background_frames=10):
+                                background_frames=10,
+                                show_background_line=False,
+                                show_zero_y_axis=False):
     """Plot multiple inhibitor datasets on the same axes with optional model fits.
 
     Parameters
@@ -613,6 +652,11 @@ def plot_multiple_inhibitors(full_frames_list,
     background_frames : int
         Number of frames at the end of the experiment (or xlims window) used
         to estimate background intensity. Default 10.
+    show_background_line : bool
+        If True, draw a horizontal dashed line at the estimated background
+        intensity level per dataset. Default False.
+    show_zero_y_axis : bool
+        If True, draw a horizontal dashed line at y = 0. Default False.
 
     Returns
     -------
@@ -649,22 +693,39 @@ def plot_multiple_inhibitors(full_frames_list,
                     else list(range(intensities.shape[0])))
 
         # ── Background removal and 0-1 rescaling ────────────────
+        _bg_raw_value = None
+        if xlims is not None:
+            end_mask = frames <= xlims[1]
+            _end_idx = int(np.sum(end_mask))
+        else:
+            _end_idx = intensities.shape[1]
+        _bg_start = max(0, _end_idx - background_frames)
+
         if remove_background_intensity:
             intensities = intensities.copy()
-            if xlims is not None:
-                end_mask = frames <= xlims[1]
-                end_idx = int(np.sum(end_mask))
-            else:
-                end_idx = intensities.shape[1]
-            bg_start = max(0, end_idx - background_frames)
             # Estimate background from the MEAN trajectory (robust to per-trace noise)
             resp_data = intensities[resp_idx, :]
-            mean_for_bg = np.nanmean(resp_data[:, bg_start:end_idx])
+            mean_for_bg = np.nanmean(resp_data[:, _bg_start:_end_idx])
+            _bg_raw_value = mean_for_bg
             intensities = intensities - mean_for_bg
             # Rescale so the mean pre-treatment intensity = 1
             mean_pre = np.nanmean(resp_data[:, :inhibitor_frame_index] - mean_for_bg)
             if mean_pre != 0:
                 intensities = intensities / mean_pre
+
+        if show_background_line:
+            if _bg_raw_value is not None:
+                # After rescaling, background maps to 0
+                _lbl = legend_labels[idx] if legend_labels else f'Dataset {idx}'
+                ax.axhline(y=0, color=color, linestyle=':', linewidth=1,
+                            label=f'BG ({_lbl}: {_bg_raw_value:.1f} raw)')
+            else:
+                # No rescaling — compute and show at its original level
+                resp_data = intensities[resp_idx, :]
+                _bg_display = np.nanmean(resp_data[:, _bg_start:_end_idx])
+                _lbl = legend_labels[idx] if legend_labels else f'Dataset {idx}'
+                ax.axhline(y=_bg_display, color=color, linestyle=':', linewidth=1,
+                            label=f'BG ({_lbl}) = {_bg_display:.1f}')
 
         # Plot individual trajectories
         if show_individual_trajectories:
@@ -727,16 +788,16 @@ def plot_multiple_inhibitors(full_frames_list,
 
                 if show_runoff_time:
                     ax.axvline(x=t_half, color=color, linestyle=':', linewidth=1,
-                               label=f'{label_text} t½ ~ {t_half:.1f}')
+                               label=f'{label_text} t½ ~ {t_half:.1f} min')
                     ax.axvline(x=t_runoff, color=color, linestyle='--', linewidth=1,
-                               label=f'{label_text} τ ({frac_pct}%) ~ {t_runoff:.1f}')
+                               label=f'{label_text} τ (2×t½) ~ {t_runoff:.1f} min')
 
                 # Print fitted parameters
                 print(f'── {label_text}: {fit_label} ──')
                 for k, v in fit_result['params'].items():
                     print(f'  {k}: {v:.4f}')
                 print(f'  t½:      {fit_result["t_half"]:.2f} min')
-                print(f'  τ_runoff ({frac_pct}%): {fit_result["t_runoff"]:.2f} min')
+                print(f'  τ_runoff (2×t½): {fit_result["t_runoff"]:.2f} min')
                 chi2r = fit_result['chi2_reduced']
                 print(f'  χ²_red:  {chi2r:.4f}  (dof={fit_result["dof"]})')
 
@@ -748,6 +809,11 @@ def plot_multiple_inhibitors(full_frames_list,
     if show_treatment_line:
         ax.axvline(x=0, color='black', linestyle='--', linewidth=1,
                     label=treatment_label)
+
+    # Optional horizontal reference lines
+    if show_zero_y_axis:
+        ax.axhline(y=0, color='black', linestyle='--', linewidth=0.8,
+                    label='y = 0')
 
     # Styling
     ax.set_xlabel("Time (min)", fontdict={'size': 16, 'color': 'black'})
