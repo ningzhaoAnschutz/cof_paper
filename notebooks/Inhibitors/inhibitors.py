@@ -333,6 +333,8 @@ def fit_inhibitor_model(x_data, y_data, err_data=None, model='exponential',
             'runoff_fraction': runoff_fraction,
             'chi2_reduced': chi2_red,
             'dof': dof,
+            'R2': r_squared,
+            'n_data': n_data,
         }
         return result
 
@@ -533,6 +535,7 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
             print(f'  τ_runoff (2×t½): {fit_result["t_runoff"]:.2f} min')
             chi2r = fit_result['chi2_reduced']
             print(f'  χ²_red:  {chi2r:.4f}  (dof={fit_result["dof"]})')
+            print(f'  R²:      {fit_result["R2"]:.4f}  (n={fit_result["n_data"]})')
 
     # Treatment line at t = 0
     if show_treatment_line:
@@ -826,6 +829,7 @@ def plot_multiple_inhibitors(full_frames_list,
                 print(f'  τ_runoff (2×t½): {fit_result["t_runoff"]:.2f} min')
                 chi2r = fit_result['chi2_reduced']
                 print(f'  χ²_red:  {chi2r:.4f}  (dof={fit_result["dof"]})')
+                print(f'  R²:      {fit_result["R2"]:.4f}  (n={fit_result["n_data"]})')
 
             fit_results.append(fit_result)
         else:
