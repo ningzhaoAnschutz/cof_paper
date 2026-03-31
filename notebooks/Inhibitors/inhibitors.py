@@ -224,7 +224,7 @@ def fit_inhibitor_model(x_data, y_data, err_data=None, model='exponential',
             popt, pcov = curve_fit(_linear_model, x_fit, y_fit, **sigma_kwarg)
             a, b = popt
             perr = np.sqrt(np.diag(pcov))
-            fitted_full = np.maximum(_linear_model(x_data, *popt), 0.0)
+            fitted_full = _linear_model(x_data, *popt)
 
             # Derived quantities
             # Estimate actual baseline from last 20% of data
@@ -504,8 +504,21 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
             frac_pct = int(fit_result['runoff_fraction'] * 100)
 
             if show_fit:
-                ax.plot(full_frames[start:], fit_result['fitted_curve'][start:], '-',
-                        color='red', linewidth=1.5, label=label)
+                fit_x = full_frames[start:]
+                fit_y = fit_result['fitted_curve'][start:]
+                # For linear fits, truncate at the point where the fit reaches zero
+                if fit_result['model'] == 'linear':
+                    positive_mask = fit_y > 0
+                    if np.any(positive_mask):
+                        last_pos = np.where(positive_mask)[0][-1] + 1
+                        fit_x = fit_x[:last_pos]
+                        fit_y = fit_y[:last_pos]
+                    else:
+                        fit_x = fit_x[:0]  # nothing to plot
+                        fit_y = fit_y[:0]
+                if len(fit_x) > 0:
+                    ax.plot(fit_x, fit_y, '-',
+                            color='red', linewidth=1.5, label=label)
             if show_runoff_time:
                 ax.axvline(x=t_half, color='green', linestyle='--', linewidth=1,
                            label=fr'$t_{{1/2}}$ ~ {t_half:.1f} min')
@@ -782,9 +795,22 @@ def plot_multiple_inhibitors(full_frames_list,
                 frac_pct = int(runoff_fraction * 100)
                 
                 if show_fit:
-                    ax.plot(frames[start:], fit_result['fitted_curve'][start:], '-',
-                            color='red', linewidth=1.5,
-                            label=f'{label_text} {fit_label}')
+                    fit_x = frames[start:]
+                    fit_y = fit_result['fitted_curve'][start:]
+                    # For linear fits, truncate at the point where the fit reaches zero
+                    if fit_result['model'] == 'linear':
+                        positive_mask = fit_y > 0
+                        if np.any(positive_mask):
+                            last_pos = np.where(positive_mask)[0][-1] + 1
+                            fit_x = fit_x[:last_pos]
+                            fit_y = fit_y[:last_pos]
+                        else:
+                            fit_x = fit_x[:0]
+                            fit_y = fit_y[:0]
+                    if len(fit_x) > 0:
+                        ax.plot(fit_x, fit_y, '-',
+                                color='red', linewidth=1.5,
+                                label=f'{label_text} {fit_label}')
 
                 if show_runoff_time:
                     ax.axvline(x=t_half, color=color, linestyle=':', linewidth=1,
