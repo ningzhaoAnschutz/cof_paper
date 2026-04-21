@@ -47,12 +47,16 @@ cof_paper/
 │   │   ├── Fig 4_GFPFast_CoF Analysis Notebook.ipynb
 │   │   ├── Fig 4_GFPSlow_CoF Analysis Notebook.ipynb
 │   │   ├── Fig 5_GFPFast_CoF Analysis Notebook.ipynb
+│   │   ├── Fig 5_GFPSlow_CoF Analysis Notebook.ipynb
+│   │   ├── Fig X CoF Analysis Notebook.ipynb
 │   │   └── All Plots_20260310.ipynb
 │   ├── Inhibitors/               # Inhibitor runoff experiments
 │   │   ├── inhibitors.py         # Inhibitor analysis module (fitting, plotting)
-│   │   ├── Fig 3_Harringtonine_Fast vs Slow.ipynb
-│   │   ├── Fig 4_Harringtonine_GFPFast.ipynb
+│   │   ├── Fig 1_Harringtonine_dmCh dishes.ipynb
 │   │   ├── Fig 1_Puromycin_all reporters.ipynb
+│   │   ├── Fig 3_Harringtonine_Fast vs Slow.ipynb
+│   │   ├── Fig 4_Harringtonine_*.ipynb
+│   │   ├── Fig 5_Harringtonine_Deopt Fast dishes.ipynb
 │   │   └── Harringtonine_example.ipynb
 │   ├── acf/                      # Autocorrelation function analysis
 │   │   ├── acf_individual.py     # Individual ACF analysis
@@ -63,7 +67,7 @@ cof_paper/
 │   │   ├── FRAP_processing_RS.ipynb
 │   │   ├── FRAP_representative_images_RS.ipynb
 │   │   └── frap_plotting_module.py
-│   ├── autocorrelations/         # Time-course correlation analysis
+│   ├── kk_autocorrelations/      # Legacy autocorrelation notebooks
 │   ├── codon_optimization/       # CAI analysis and codon studies
 │   ├── image_conditions/         # Laser intensity audits
 │   └── reprocessing_data/        # Data reprocessing workflows
@@ -73,7 +77,6 @@ cof_paper/
 │   └── cellpose_models/          # Custom Cellpose segmentation models
 ├── data/                         # Data files (not tracked in git)
 │   └── gene_sequences/           # Gene sequence files (.dna)
-├── .agent/workflows/             # AI-assisted workflow definitions
 ├── docs/                         # Documentation
 ├── requirements.txt              # Python dependencies
 └── README.md                     # This file
