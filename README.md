@@ -51,13 +51,20 @@ cof_paper/
 │   │   ├── Fig X CoF Analysis Notebook.ipynb
 │   │   └── All Plots_20260310.ipynb
 │   ├── Inhibitors/               # Inhibitor runoff experiments
-│   │   ├── inhibitors.py         # Inhibitor analysis module (fitting, plotting)
+│   │   ├── inhibitors.py         # Inhibitor analysis module (fitting, plotting, simulation)
 │   │   ├── Fig 1_Harringtonine_dmCh dishes.ipynb
 │   │   ├── Fig 1_Puromycin_all reporters.ipynb
+│   │   ├── Fig 3_Harringtonine_Fast dishes.ipynb
 │   │   ├── Fig 3_Harringtonine_Fast vs Slow.ipynb
-│   │   ├── Fig 4_Harringtonine_*.ipynb
+│   │   ├── Fig 3_Harringtonine_Slow dishes.ipynb
+│   │   ├── Fig 3_Puromycin_Fast vs Slow.ipynb
+│   │   ├── Fig 4_Harringtonine_*.ipynb  (3 notebooks)
+│   │   ├── Fig 4_Puromycin_*.ipynb      (2 notebooks)
 │   │   ├── Fig 5_Harringtonine_Deopt Fast dishes.ipynb
-│   │   └── Harringtonine_example.ipynb
+│   │   ├── Fig 5_Puromycin_Fast deopt vs Slow deopt.ipynb
+│   │   ├── LA_Fig 3_Harringtonine_Fast vs Slow.ipynb
+│   │   ├── Harringtonine_example.ipynb
+│   │   └── Puromycin_example.ipynb
 │   ├── acf/                      # Autocorrelation function analysis
 │   │   ├── acf_individual.py     # Individual ACF analysis
 │   │   ├── acf_sensitivity.py    # Sensitivity analysis
