@@ -80,7 +80,11 @@ def calculate_intensity(particle_counts_per_frame, sum_intensities_per_frame, in
 
     # For frames before treatment, avoid division by zero:
     pre_intensities = sum_intensities_per_frame[:inhibitor_frame_index]
-    intensity_before_treatment = np.where(pre_counts == 0, 0, pre_intensities / pre_counts)
+    intensity_before_treatment = np.divide(
+        pre_intensities, pre_counts,
+        out=np.zeros(pre_intensities.shape, dtype=float),
+        where=pre_counts != 0,
+    )
     # For frames after treatment, if the average is zero then return zeros.
     post_intensities = sum_intensities_per_frame[inhibitor_frame_index:]
     if average_particles_before_treatment == 0:
@@ -91,24 +95,13 @@ def calculate_intensity(particle_counts_per_frame, sum_intensities_per_frame, in
     average_intensity_with_respect_number_particles = np.concatenate([intensity_before_treatment, intensity_after_treatment])
 
     # Apply normalization
-    if normalization_method == 'minmax':
-        val_min = average_intensity_with_respect_number_particles.min()
-        val_max = average_intensity_with_respect_number_particles.max()
-        if val_max - val_min == 0:
-            intensities_normalized_before_treatment_intensity = np.zeros_like(average_intensity_with_respect_number_particles)
-        else:
-            intensities_normalized_before_treatment_intensity = (average_intensity_with_respect_number_particles - val_min) / (val_max - val_min)
-    elif normalization_method == 'percentile':
-        val_low = np.percentile(average_intensity_with_respect_number_particles, percentile_range[0])
-        val_high = np.percentile(average_intensity_with_respect_number_particles, percentile_range[1])
-        if val_high - val_low == 0:
-            intensities_normalized_before_treatment_intensity = np.zeros_like(average_intensity_with_respect_number_particles)
-        else:
-            intensities_normalized_before_treatment_intensity = (average_intensity_with_respect_number_particles - val_low) / (val_high - val_low)
-    elif normalization_method == 'mean':
+    # 'minmax' and 'percentile' are handled globally in process_inhibitor_data
+    # (across all cells), so here they pass through raw per-cell intensities.
+    # 'mean' is inherently per-cell (divides by pre-treatment mean).
+    if normalization_method == 'mean':
         mean_before_treatment = average_intensity_with_respect_number_particles[:inhibitor_frame_index].mean()
         intensities_normalized_before_treatment_intensity = average_intensity_with_respect_number_particles / mean_before_treatment
-    elif normalization_method is None:
+    else:
         intensities_normalized_before_treatment_intensity = average_intensity_with_respect_number_particles
 
     return intensities_normalized_before_treatment_intensity, average_intensity_with_respect_number_particles, average_particles_before_treatment
@@ -439,7 +432,8 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
                    show_background_line=False,
                    show_zero_y_axis=False,
                    fit_end_range=None, r2_threshold=0.95,
-                   gene_length_effective=None, drug_diffusion_time_min=1.0):
+                   gene_length_effective=None, drug_diffusion_time_min=1.0,
+                   frame_interval_sec=60):
     """Plot inhibitor run-off data with optional model fit.
 
     Args:
@@ -495,6 +489,9 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
 
     if responding_indices is None:
         responding_indices = list(range(len(intensities_normalized)))
+    if len(responding_indices) == 0:
+        print('No responding cells to plot.')
+        return None
 
     # ── Background removal and 0-1 rescaling ────────────────────────
     _bg_raw_value = None  # store for optional dashed line
@@ -676,10 +673,14 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
 
     # TASEP simulation overlay (if provided)
     if mean_intensity_ssa_inh is not None and err_intensity_ssa_inh is not None:
+        _has_params = (list_param is not None
+                       and list_param[0] is not None
+                       and list_param[1] is not None)
         legend_label_sim = (fr'Model Fit ($k_e$={np.round(list_param[1],1)}, $k_i$={np.round(list_param[0],3)})'
-                        if list_param[1] is not None and list_param[0] is not None else 'Simulation')
-        plt.plot(time_array_min-5, mean_intensity_ssa_inh, '-', color='red', linewidth=3, label=legend_label_sim)
-        plt.fill_between(time_array_min-5, mean_intensity_ssa_inh - err_intensity_ssa_inh,
+                        if _has_params else 'Simulation')
+        _treatment_time_min = inhibitor_frame_index * frame_interval_sec / 60.0
+        plt.plot(time_array_min - _treatment_time_min, mean_intensity_ssa_inh, '-', color='red', linewidth=3, label=legend_label_sim)
+        plt.fill_between(time_array_min - _treatment_time_min, mean_intensity_ssa_inh - err_intensity_ssa_inh,
                         mean_intensity_ssa_inh + err_intensity_ssa_inh, color='red', alpha=0.1)
 
     # ── Model fit ────────────────────────────────────────────────────────
@@ -735,12 +736,13 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
                         ax.plot(_extrap_x, _extrap_y, '--', color='red', linewidth=1.5,
                                 label='_nolegend_')
 
+            _er = (_elongation_rate(fit_result, gene_length_effective, drug_diffusion_time_min)
+                   if gene_length_effective is not None else np.nan)
+
             if show_runoff_time:
                 if fit_result['model'] != 'linear_extrapolated':
                     ax.axvline(x=t_half, color='green', linestyle='--', linewidth=1,
                                label=fr'$t_{{1/2}}$ ~ {t_half:.1f} min')
-                _er = (_elongation_rate(fit_result, gene_length_effective, drug_diffusion_time_min)
-                       if gene_length_effective is not None else np.nan)
                 _elong_lbl = f'  ({_er:.2f} aa/s)' if np.isfinite(_er) else ''
                 ax.axvline(x=t_runoff, color='orange', linestyle='--', linewidth=1,
                            label=fr'$\tau_{{ro}}$ {t_runoff:.1f} min{_elong_lbl}')
@@ -1127,6 +1129,7 @@ def plot_multiple_inhibitors(full_frames_list,
 
             # Re-compute mean/err for this dataset (mirrors the main loop above)
             _int = intensities.copy()
+            _bg_raw_value = None  # per-dataset; avoids leakage from the main loop
             if remove_background_intensity:
                 if xlims is not None:
                     _end_idx = int(np.sum(frames <= xlims[1]))
@@ -1135,6 +1138,7 @@ def plot_multiple_inhibitors(full_frames_list,
                 _bg_start = max(0, _end_idx - background_frames)
                 _resp_data = _int[resp_idx, :]
                 _mean_bg = np.nanmean(_resp_data[:, _bg_start:_end_idx])
+                _bg_raw_value = _mean_bg
                 _int = _int - _mean_bg
                 _mean_pre = np.nanmean(_resp_data[:, :inhibitor_frame_index] - _mean_bg)
                 if _mean_pre != 0:
@@ -1269,8 +1273,8 @@ def plot_multiple_inhibitors(full_frames_list,
     return fit_results
 
 
-def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_dir='', selected_field='spot_int_ch_0', use_sem=True, show_summary=True, max_percentage_threshold_after_treatment=None, frame_rate_min=1,
-                     frame_interval_sec=60, simulation_dna_sequence=None, inhibitor_delay_time_seconds=60, list_tag_sequences=[HA_TAG], ki_simulation=0.04, ke_simulation=4.5,
+def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_dir='', selected_field='spot_int_ch_0', use_sem=True, show_summary=True, max_percentage_threshold_after_treatment=None,
+                     frame_interval_sec=60, simulation_dna_sequence=None, inhibitor_delay_time_seconds=60, list_tag_sequences=None, ki_simulation=0.04, ke_simulation=4.5,
                      normalization_method='mean', percentile_range=(5, 95), verbose=False,
                      remove_frame_at_inhibitor_application=False):
     """Process inhibitor runoff experiment data.
@@ -1286,7 +1290,6 @@ def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_di
         show_summary: If True, print summary statistics.
         max_percentage_threshold_after_treatment: Threshold (0-1) to classify
             responding vs non-responding cells.
-        frame_rate_min: Frame rate for downsampling (1 = every frame).
         frame_interval_sec: Time interval between frames in seconds.
             Default 60 (1 min). Use 20 for 20-second intervals, etc.
         simulation_dna_sequence: DNA sequence for TASEP simulation (optional).
@@ -1343,7 +1346,7 @@ def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_di
         return None, None, None, None, None, None, None, None
 
     full_frames = np.arange(0, max_frame)
-    frame_indices = np.arange(0, max_frame, frame_rate_min)  # Frame indices for processing
+    frame_indices = np.arange(0, max_frame + 1)  # Frame indices for processing (inclusive of max_frame)
     array_particles = np.zeros((len(list_dataframes), len(frame_indices)))
     average_intensity = np.zeros((len(list_dataframes), len(frame_indices)))
     intensities_normalized = np.zeros((len(list_dataframes), len(frame_indices)))
@@ -1355,10 +1358,10 @@ def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_di
         # Re-index to include frames with no particles (fill missing with 0)
         particle_counts_per_frame = particle_counts_per_frame.reindex(frame_indices, fill_value=0).values
         sum_intensities_per_frame = sum_intensities_per_frame.reindex(frame_indices, fill_value=0).values
-        # Ensure the lengths match the max frame
-        if len(particle_counts_per_frame) > max_frame:
-            particle_counts_per_frame = particle_counts_per_frame[:max_frame]
-            sum_intensities_per_frame = sum_intensities_per_frame[:max_frame]
+        # Ensure the lengths match frame_indices
+        if len(particle_counts_per_frame) > len(frame_indices):
+            particle_counts_per_frame = particle_counts_per_frame[:len(frame_indices)]
+            sum_intensities_per_frame = sum_intensities_per_frame[:len(frame_indices)]
         # Compute raw intensities (always use 'mean' per-cell first)
         intensities_normalized_before_treatment_intensity, average_intensity_with_respect_number_particles, average_particles_before_treatment = calculate_intensity(
             particle_counts_per_frame, sum_intensities_per_frame, inhibitor_frame_index,
@@ -1408,9 +1411,9 @@ def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_di
     # Classify each trajectory
     if max_percentage_threshold_after_treatment is not None:
         for i, trajectory in enumerate(intensities_normalized):
-            baseline = np.mean(trajectory[:treatment_start_index])
+            baseline = np.nanmean(trajectory[:treatment_start_index])
             threshold = max_percentage_threshold_after_treatment * baseline
-            avg_post_treatment = np.mean(trajectory[treatment_start_index:])
+            avg_post_treatment = np.nanmean(trajectory[treatment_start_index:])
             if avg_post_treatment >= threshold:
                 non_responding_indices.append(i)
             else:
@@ -1449,6 +1452,8 @@ def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_di
 
 
     if simulation_dna_sequence is not None:
+        if list_tag_sequences is None:
+            list_tag_sequences = [HA_TAG]
         list_simulation_parameters = [ki_simulation, ke_simulation]
         ########################## Modeling  #########################################
         #inhibitor_delay_time_seconds = 60 # seconds. According to Tanenbaum paper 2016.
@@ -1484,7 +1489,7 @@ def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_di
         time_array_sim_min = time_array_downsampled/60
         normalized_data = np.zeros_like(ssa_array_downsampled)
         for i in range(ssa_array_downsampled.shape[0]):
-            mean_before_treatment = np.mean(ssa_array_downsampled[i,:inhibitor_frame_index+1])
+            mean_before_treatment = np.mean(ssa_array_downsampled[i,:inhibitor_frame_index])
             normalized_data[i] = ssa_array_downsampled[i]/mean_before_treatment
         mean_intensity_ssa_inh = np.mean(normalized_data, axis=0)
         if use_sem:
@@ -1573,7 +1578,7 @@ def simulate_inhibitor(gene_sequence, ki=0.04, ke_global=5, use_sem=False, max_f
     time_array_min = time_array_downsampled / 60
     normalized_data = np.zeros_like(ssa_array_downsampled)
     for i in range(ssa_array_downsampled.shape[0]):
-        mean_before_treatment = np.mean(ssa_array_downsampled[i, :inhibitor_frame + 1])
+        mean_before_treatment = np.mean(ssa_array_downsampled[i, :inhibitor_frame])
         normalized_data[i] = ssa_array_downsampled[i] / mean_before_treatment
     mean_intensity_ssa_inh = np.mean(normalized_data, axis=0)
 
