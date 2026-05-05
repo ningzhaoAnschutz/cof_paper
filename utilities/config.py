@@ -16,7 +16,7 @@ REPORTER_PLASMID_NAME_MAPPING = {
     'pRS029': '3sfGFP-3mCh',      # 3x sfGFP, 3x mCh
     'pRS030': '2sfGFP-4mCh',      # 2x sfGFP, 4x mCh
     'pRS031': '1sfGFP-5mCh',      # 1x sfGFP, 5x mCh
-    'PNZ405': '6xsfGFP (trunc)',  # 6x sfGFP (truncated), 0x mCh
+    'pNZ405': '6xsfGFP (trunc)',  # 6x sfGFP (truncated), 0x mCh
 
     # mGFPuv series (slow folding GFP)
     'pNZ370': '6GFPuv',          # 6x mGFPuv, 0x mCh
@@ -53,7 +53,7 @@ PLASMID_SHORT_NAME_MAPPING = {
     'pRS029': '3sf',   # 3 sfGFP copies
     'pRS030': '2sf',   # 2 sfGFP copies
     'pRS031': '1sf',   # 1 sfGFP copy
-    'PNZ405': '6sf-trc', # 6 sfGFP
+    'pNZ405': '6sf-trc', # 6 sfGFP
     'pNZ370': '6uv',   # 6 GFPuv copies
     'pRS032': '4uv',   # 4 GFPuv copies
     'pNZ396': '3uv',   # 3 GFPuv copies

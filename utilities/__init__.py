@@ -10,6 +10,7 @@ Modules:
     - plotting: Visualization functions for swarm plots, efficiency plots, etc.
     - metadata: Functions for extracting microscopy file metadata (LIF, etc.)
     - export_to_excel: Functions for exporting efficiency data to Excel format
+    - intensity_distributions: Per-particle intensity distribution analysis and plotting
 
 Example usage:
     from utilities import config, data_loading, plotting
@@ -26,6 +27,7 @@ from . import data_loading
 from . import plotting
 from . import metadata
 from . import export_to_excel
+from . import intensity_distributions
 
 # Convenience re-exports for common items
 from .config import REPORTER_PLASMID_NAME_MAPPING, PLASMID_SHORT_NAME_MAPPING
@@ -44,6 +46,12 @@ from .plotting import (
 )
 from .metadata import extract_laser_intensities
 from .export_to_excel import export_efficiency_to_excel
+from .intensity_distributions import (
+    load_condition_intensities,
+    plot_per_cell_distributions,
+    plot_pooled_distributions,
+    plot_cell_summary,
+)
 
 __all__ = [
     # Modules
@@ -69,4 +77,10 @@ __all__ = [
     'extract_laser_intensities',
     # Export functions
     'export_efficiency_to_excel',
+    # Intensity distribution functions
+    'intensity_distributions',
+    'load_condition_intensities',
+    'plot_per_cell_distributions',
+    'plot_pooled_distributions',
+    'plot_cell_summary',
 ]
