@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from scipy.stats import gaussian_kde, mannwhitneyu
+from scipy.stats import gaussian_kde, ks_2samp, mannwhitneyu
 
 # ── Shared style constants (match plot_swarm_plot in utilities/plotting.py) ───
 _FONT = 'Arial'
@@ -454,6 +454,18 @@ def plot_pooled_distributions(
                   f"std={np.std(vals):.2f}   "
                   f"n={vals.size}   "
                   f"n_cells={r['n_cells']}")
+
+    # Two-sample Kolmogorov-Smirnov test on pooled particle distributions (exactly 2 conditions)
+    if print_stats and len(all_results) == 2:
+        vals_a = _finite_values(_get_data_for_mode(all_results[0], mode), drop_nonpositive)
+        vals_b = _finite_values(_get_data_for_mode(all_results[1], mode), drop_nonpositive)
+        if vals_a.size >= 2 and vals_b.size >= 2:
+            ks_stat, ks_p = ks_2samp(vals_a, vals_b)
+            print(f"  Kolmogorov-Smirnov test (pooled): D={ks_stat:.4f}, p={ks_p:.4g}")
+            print(f"    D statistic: max distance between the two CDFs "
+                  f"(0 = identical, 1 = completely separated)")
+            print(f"    p-value: probability of observing D this large "
+                  f"if the distributions were truly identical")
     if not has_plotted_data:
         raise ValueError('No finite values available for pooled plot')
 
@@ -571,6 +583,12 @@ def plot_cell_summary(
         if len(g1) >= 2 and len(g2) >= 2:
             stat, p_val = mannwhitneyu(g1, g2, alternative='two-sided')
             print(f"  Mann-Whitney U: U={stat:.1f}, p={p_val:.4g}")
+            ks_stat, ks_p = ks_2samp(g1, g2)
+            print(f"  Kolmogorov-Smirnov test (per-cell): D={ks_stat:.4f}, p={ks_p:.4g}")
+            print(f"    D statistic: max distance between the two CDFs "
+                  f"(0 = identical, 1 = completely separated)")
+            print(f"    p-value: probability of observing D this large "
+                  f"if the distributions were truly identical")
             # Annotate p-value on the figure
             y_max = summary_df[y_col].max()
             y_bar = y_max * 1.08
