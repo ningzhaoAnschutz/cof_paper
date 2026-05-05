@@ -40,6 +40,8 @@ mask_*
 tests/
 test*
 test*/
+*old*/
+*Old*/
 filtered_images_*/
 database*
 OneDrive*/
@@ -73,3 +75,4 @@ kk_*
 *kk_old/
 *.npz
 *.docx
+modeling/
