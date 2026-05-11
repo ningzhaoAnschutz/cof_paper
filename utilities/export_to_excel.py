@@ -29,8 +29,8 @@ def _parse_folder_substring(folder_substring):
     """
     Extract the date and plasmid ID from a folder substring.
 
-    Folder substrings from get_folder_substrings_and_names (process_individual_days=True)
-    look like:
+    Folder substrings from get_folder_substrings_and_names
+    (process_individual_days=True) look like:
         '20260210 pRS026'       → date='20260210', plasmid='pRS026'
         '20260210-1 pRS031'     → date='20260210', plasmid='pRS031'
 
@@ -41,7 +41,7 @@ def _parse_folder_substring(folder_substring):
         tuple: (date_str or None, plasmid_id or None)
     """
     # Try to match "DATE PLASMID" or "DATE-N PLASMID" format
-    match = re.match(r'^(\d{7,8}(?:-\d+)?)\s+(\w+)', folder_substring)
+    match = re.match(r"^(\d{7,8}(?:-\d+)?)\s+(\w+)", folder_substring)
     if match:
         return match.group(1), match.group(2)
 
@@ -54,7 +54,7 @@ def _parse_folder_substring(folder_substring):
     for plasmid_id in REPORTER_PLASMID_NAME_MAPPING:
         if plasmid_id in folder_substring:
             # Try to extract date from the beginning
-            date_match = re.match(r'^(\d{7,8})', folder_substring)
+            date_match = re.match(r"^(\d{7,8})", folder_substring)
             date = date_match.group(1) if date_match else None
             return date, plasmid_id
 
@@ -79,7 +79,7 @@ def _build_reporter_variant(plasmid_id, reporter_prefix, reporter_suffix):
     parts = short_name.split("-")
     expanded = []
     for part in parts:
-        match = re.match(r'^(\d+)(.+)$', part)
+        match = re.match(r"^(\d+)(.+)$", part)
         if match:
             expanded.append(f"{match.group(1)}x{match.group(2)}")
         else:
@@ -116,12 +116,14 @@ def export_efficiency_to_excel(
 
     Args:
         data_dict: Dictionary returned by aggregate_folder_data().
-        list_folder_substrings: Folder substrings from get_folder_substrings_and_names().
+        list_folder_substrings: Folder substrings from
+            get_folder_substrings_and_names().
             These contain the date and plasmid ID (e.g., '20260210 pRS026').
         list_names: List of condition names from get_folder_substrings_and_names().
         save_path: Output Excel file path.
         title: Title string for the first row.
-        efficiency_key: Which efficiency to export ('efficiency_manual' or 'efficiency_ml').
+        efficiency_key: Which efficiency to export ('efficiency_manual' or
+            'efficiency_ml').
         reporter_prefix: Prefix for building reporter variant strings.
         reporter_suffix: Suffix for building reporter variant strings.
         col_type_label: Label for the column type row (e.g., 'ML 0.5').

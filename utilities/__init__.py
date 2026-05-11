@@ -14,7 +14,7 @@ Modules:
 
 Example usage:
     from utilities import config, data_loading, plotting
-    
+
     # Or import specific items
     from utilities.config import REPORTER_PLASMID_NAME_MAPPING
     from utilities.data_loading import aggregate_folder_data
@@ -22,65 +22,68 @@ Example usage:
     from utilities.metadata import extract_laser_intensities
 """
 
-from . import config
-from . import data_loading
-from . import plotting
-from . import metadata
-from . import export_to_excel
-from . import intensity_distributions
+from . import (
+    config,
+    data_loading,
+    export_to_excel,
+    intensity_distributions,
+    metadata,
+    plotting,
+)
 
 # Convenience re-exports for common items
-from .config import REPORTER_PLASMID_NAME_MAPPING, PLASMID_SHORT_NAME_MAPPING
+from .config import PLASMID_SHORT_NAME_MAPPING, REPORTER_PLASMID_NAME_MAPPING
 from .data_loading import (
-    get_folder_substrings_and_names,
-    extract_data_from_tracking_df,
-    extract_data_from_folders,
     aggregate_folder_data,
+    extract_data_from_folders,
+    extract_data_from_tracking_df,
+    get_folder_substrings_and_names,
 )
-from .plotting import (
-    plot_swarm_plot,
-    plot_swarm_plot_efficiency,
-    plot_efficiency_vs_intensity_scatter,
-    plot_efficiency_vs_intensity_scatter_means,
-    plot_efficiency_vs_intensity_kde,
-)
-from .metadata import extract_laser_intensities
 from .export_to_excel import export_efficiency_to_excel
 from .intensity_distributions import (
     load_condition_intensities,
+    plot_cell_summary,
     plot_per_cell_distributions,
     plot_pooled_distributions,
-    plot_cell_summary,
+)
+from .metadata import extract_laser_intensities
+from .plotting import (
+    plot_efficiency_vs_intensity_kde,
+    plot_efficiency_vs_intensity_scatter,
+    plot_efficiency_vs_intensity_scatter_means,
+    plot_swarm_plot,
+    plot_swarm_plot_efficiency,
 )
 
 __all__ = [
     # Modules
-    'config',
-    'data_loading', 
-    'plotting',
-    'metadata',
+    "config",
+    "data_loading",
+    "plotting",
+    "metadata",
+    "export_to_excel",
+    "intensity_distributions",
     # Config items
-    'REPORTER_PLASMID_NAME_MAPPING',
-    'PLASMID_SHORT_NAME_MAPPING',
+    "REPORTER_PLASMID_NAME_MAPPING",
+    "PLASMID_SHORT_NAME_MAPPING",
     # Data loading functions
-    'get_folder_substrings_and_names',
-    'extract_data_from_tracking_df',
-    'extract_data_from_folders',
-    'aggregate_folder_data',
+    "get_folder_substrings_and_names",
+    "extract_data_from_tracking_df",
+    "extract_data_from_folders",
+    "aggregate_folder_data",
     # Plotting functions
-    'plot_swarm_plot',
-    'plot_swarm_plot_efficiency',
-    'plot_efficiency_vs_intensity_scatter',
-    'plot_efficiency_vs_intensity_scatter_means',
-    'plot_efficiency_vs_intensity_kde',
+    "plot_swarm_plot",
+    "plot_swarm_plot_efficiency",
+    "plot_efficiency_vs_intensity_scatter",
+    "plot_efficiency_vs_intensity_scatter_means",
+    "plot_efficiency_vs_intensity_kde",
     # Metadata functions
-    'extract_laser_intensities',
+    "extract_laser_intensities",
     # Export functions
-    'export_efficiency_to_excel',
+    "export_efficiency_to_excel",
     # Intensity distribution functions
-    'intensity_distributions',
-    'load_condition_intensities',
-    'plot_per_cell_distributions',
-    'plot_pooled_distributions',
-    'plot_cell_summary',
+    "load_condition_intensities",
+    "plot_per_cell_distributions",
+    "plot_pooled_distributions",
+    "plot_cell_summary",
 ]
