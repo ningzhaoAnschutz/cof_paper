@@ -133,6 +133,71 @@ def extract_data_from_tracking_df(list_of_tracking_dataframes, column_name, verb
     return mean_data, median_data, std_data, list_data, number_of_spots
 
 
+def _get_particle_column(tracking_df):
+    """Return the best particle identifier column, or None if not found."""
+    if 'unique_particle' in tracking_df.columns:
+        return 'unique_particle'
+    if 'particle' in tracking_df.columns:
+        return 'particle'
+    return None
+
+
+def _extract_trajectory_data_by_colocalization(tracking_df, metric_column):
+    """
+    Compute time-averaged metric values split by colocalization status.
+
+    For each trajectory (particle), computes the time-average of
+    ``metric_column`` across all frames.  Trajectories are classified as
+    colocalized if ANY of their detections have ``is_colocalized == True``.
+
+    Parameters
+    ----------
+    tracking_df : pd.DataFrame
+        Tracking data for one cell.
+    metric_column : str
+        Column name of the metric (e.g., 'spot_int_ch_0').
+
+    Returns
+    -------
+    coloc_means : np.ndarray or None
+        Trajectory-level mean values for colocalized trajectories.
+        None if no colocalized trajectories exist, or if required
+        columns are missing.
+    not_coloc_means : np.ndarray or None
+        Trajectory-level mean values for non-colocalized trajectories.
+        None if no non-colocalized trajectories exist, or if required
+        columns are missing.
+    """
+    particle_col = _get_particle_column(tracking_df)
+    if particle_col is None:
+        return None, None
+    if 'is_colocalized' not in tracking_df.columns:
+        return None, None
+    if metric_column not in tracking_df.columns:
+        return None, None
+
+    # Determine colocalization per trajectory
+    traj_coloc = tracking_df.groupby(particle_col)['is_colocalized'].any()
+
+    # Compute time-averaged metric per trajectory
+    traj_means = tracking_df.groupby(particle_col)[metric_column].mean()
+
+    # Split by colocalization status
+    coloc_particles = traj_coloc[traj_coloc].index
+    not_coloc_particles = traj_coloc[~traj_coloc].index
+
+    coloc_means = (
+        traj_means.loc[coloc_particles].values
+        if len(coloc_particles) > 0 else None
+    )
+    not_coloc_means = (
+        traj_means.loc[not_coloc_particles].values
+        if len(not_coloc_particles) > 0 else None
+    )
+
+    return coloc_means, not_coloc_means
+
+
 def extract_data_from_folders(
     dataframes_dir, folder_substring, folder_substring_to_avoid='',
     folder_substring_second_condition='', show_file_names=False, verbose=True
@@ -205,17 +270,255 @@ def extract_data_from_folders(
                     'efficiency_cells': efficiency_cells,
                     'efficiency_manual': efficiency_manual,
                 }
+            # Compute colocalized / non-colocalized trajectory-level data
+            list_coloc_data = []
+            list_not_coloc_data = []
+            for tracking_df in list_of_tracking_dataframes:
+                coloc_means, not_coloc_means = \
+                    _extract_trajectory_data_by_colocalization(
+                        tracking_df, selected_field)
+                list_coloc_data.append(coloc_means)
+                list_not_coloc_data.append(not_coloc_means)
+
             extracted_data_dict.update({
                 f'{dataset}_ch_{channel}_mean': mean_data,
                 f'{dataset}_ch_{channel}_median': median_data,
                 f'{dataset}_ch_{channel}_std': std_data,
                 f'{dataset}_ch_{channel}_data': list_data,
+                f'{dataset}_ch_{channel}_coloc_data': list_coloc_data,
+                f'{dataset}_ch_{channel}_not_coloc_data': list_not_coloc_data,
             })
     return extracted_data_dict
 
+def aggregate_folder_data(
+    dataframes_dir,
+    list_folder_substrings,
+    list_folder_substring_to_avoid=None,
+    list_folder_substring_second_condition=None,
+    show_file_names=False,
+    min_avg_spots_threshold=None,
+    verbose=True,
+):
+    """
+    Aggregate data from multiple result folders.
+    
+    For each substring in list_folder_substrings, calls extract_data_from_folders and
+    builds up lists of metrics for channel 0 and channel 1.
+    """
+    # Prepare empty result lists
+    list_directories = []
+    list_int_ch_0, list_int_ch_1 = [], []
+    list_snr_ch_0, list_snr_ch_1 = [], []
+    list_spot_size_ch_0, list_spot_size_ch_1 = [], []
+    list_total_spot_int_ch_0, list_total_spot_int_ch_1 = [], []
+    list_spot_amplitude_ch_0, list_spot_amplitude_ch_1 = [], []
+    list_spot_sigma_ch_0, list_spot_sigma_ch_1 = [], []
+    # Colocalized trajectory-level data
+    list_int_ch_0_coloc, list_int_ch_1_coloc = [], []
+    list_snr_ch_0_coloc, list_snr_ch_1_coloc = [], []
+    list_spot_size_ch_0_coloc, list_spot_size_ch_1_coloc = [], []
+    list_total_spot_int_ch_0_coloc, list_total_spot_int_ch_1_coloc = [], []
+    list_spot_amplitude_ch_0_coloc, list_spot_amplitude_ch_1_coloc = [], []
+    list_spot_sigma_ch_0_coloc, list_spot_sigma_ch_1_coloc = [], []
+    # Non-colocalized trajectory-level data
+    list_int_ch_0_not_coloc, list_int_ch_1_not_coloc = [], []
+    list_snr_ch_0_not_coloc, list_snr_ch_1_not_coloc = [], []
+    list_spot_size_ch_0_not_coloc, list_spot_size_ch_1_not_coloc = [], []
+    list_total_spot_int_ch_0_not_coloc, list_total_spot_int_ch_1_not_coloc = [], []
+    list_spot_amplitude_ch_0_not_coloc, list_spot_amplitude_ch_1_not_coloc = [], []
+    list_spot_sigma_ch_0_not_coloc, list_spot_sigma_ch_1_not_coloc = [], []
+    list_number_spots, list_frames = [], []
+    list_number_of_color_channels, list_average_number_spots = [], []
+    list_efficiency_ml, list_efficiency_manual = [], []
 
-# Import aggregate_folder_data from the separate file
-from .data_aggregation import aggregate_folder_data
+    if list_folder_substring_to_avoid is None:
+        list_folder_substring_to_avoid = [''] * len(list_folder_substrings)
+    if list_folder_substring_second_condition is None:
+        list_folder_substring_second_condition = [''] * len(list_folder_substrings)
+
+    for i, subfolder in enumerate(list_folder_substrings):
+        if verbose:
+            print('-----------------------------------')
+            print(f'Processing : {subfolder}')
+
+        extracted = extract_data_from_folders(
+            dataframes_dir, subfolder,
+            list_folder_substring_to_avoid[i],
+            list_folder_substring_second_condition[i],
+            show_file_names=show_file_names, verbose=verbose,
+        )
+
+        num_ch = extracted.get('number_of_color_channels', 1)
+        list_number_of_color_channels.append(num_ch)
+        list_number_spots.append(extracted['number_of_spots'])
+        list_frames.append(extracted['max_frame'])
+        avg_spots = np.round(np.array(extracted['number_of_spots']) / (np.array(extracted['max_frame']) + 1), 2)
+        list_average_number_spots.append(avg_spots)
+        list_directories.append(extracted)
+
+        # Channel 0
+        list_int_ch_0.append(extracted.get('spot_int_ch_0_data'))
+        list_snr_ch_0.append(extracted.get('snr_ch_0_data'))
+        list_spot_size_ch_0.append(extracted.get('spot_size_ch_0_data'))
+        list_total_spot_int_ch_0.append(extracted.get('total_spot_int_ch_0_data'))
+        list_spot_amplitude_ch_0.append(extracted.get('psf_amplitude_ch_0_data'))
+        list_spot_sigma_ch_0.append(extracted.get('psf_sigma_ch_0_data'))
+        # Channel 0 — colocalized / not colocalized
+        list_int_ch_0_coloc.append(extracted.get('spot_int_ch_0_coloc_data'))
+        list_snr_ch_0_coloc.append(extracted.get('snr_ch_0_coloc_data'))
+        list_spot_size_ch_0_coloc.append(extracted.get('spot_size_ch_0_coloc_data'))
+        list_total_spot_int_ch_0_coloc.append(extracted.get('total_spot_int_ch_0_coloc_data'))
+        list_spot_amplitude_ch_0_coloc.append(extracted.get('psf_amplitude_ch_0_coloc_data'))
+        list_spot_sigma_ch_0_coloc.append(extracted.get('psf_sigma_ch_0_coloc_data'))
+        list_int_ch_0_not_coloc.append(extracted.get('spot_int_ch_0_not_coloc_data'))
+        list_snr_ch_0_not_coloc.append(extracted.get('snr_ch_0_not_coloc_data'))
+        list_spot_size_ch_0_not_coloc.append(extracted.get('spot_size_ch_0_not_coloc_data'))
+        list_total_spot_int_ch_0_not_coloc.append(extracted.get('total_spot_int_ch_0_not_coloc_data'))
+        list_spot_amplitude_ch_0_not_coloc.append(extracted.get('psf_amplitude_ch_0_not_coloc_data'))
+        list_spot_sigma_ch_0_not_coloc.append(extracted.get('psf_sigma_ch_0_not_coloc_data'))
+
+        # Channel 1
+        if num_ch > 1:
+            list_int_ch_1.append(extracted.get('spot_int_ch_1_data'))
+            list_snr_ch_1.append(extracted.get('snr_ch_1_data'))
+            list_spot_size_ch_1.append(extracted.get('spot_size_ch_1_data'))
+            list_total_spot_int_ch_1.append(extracted.get('total_spot_int_ch_1_data'))
+            list_spot_amplitude_ch_1.append(extracted.get('psf_amplitude_ch_1_data'))
+            list_spot_sigma_ch_1.append(extracted.get('psf_sigma_ch_1_data'))
+            # Channel 1 — colocalized / not colocalized
+            list_int_ch_1_coloc.append(extracted.get('spot_int_ch_1_coloc_data'))
+            list_snr_ch_1_coloc.append(extracted.get('snr_ch_1_coloc_data'))
+            list_spot_size_ch_1_coloc.append(extracted.get('spot_size_ch_1_coloc_data'))
+            list_total_spot_int_ch_1_coloc.append(extracted.get('total_spot_int_ch_1_coloc_data'))
+            list_spot_amplitude_ch_1_coloc.append(extracted.get('psf_amplitude_ch_1_coloc_data'))
+            list_spot_sigma_ch_1_coloc.append(extracted.get('psf_sigma_ch_1_coloc_data'))
+            list_int_ch_1_not_coloc.append(extracted.get('spot_int_ch_1_not_coloc_data'))
+            list_snr_ch_1_not_coloc.append(extracted.get('snr_ch_1_not_coloc_data'))
+            list_spot_size_ch_1_not_coloc.append(extracted.get('spot_size_ch_1_not_coloc_data'))
+            list_total_spot_int_ch_1_not_coloc.append(extracted.get('total_spot_int_ch_1_not_coloc_data'))
+            list_spot_amplitude_ch_1_not_coloc.append(extracted.get('psf_amplitude_ch_1_not_coloc_data'))
+            list_spot_sigma_ch_1_not_coloc.append(extracted.get('psf_sigma_ch_1_not_coloc_data'))
+        else:
+            list_int_ch_1.append(None)
+            list_snr_ch_1.append(None)
+            list_spot_size_ch_1.append(None)
+            list_total_spot_int_ch_1.append(None)
+            list_spot_amplitude_ch_1.append(None)
+            list_spot_sigma_ch_1.append(None)
+            list_int_ch_1_coloc.append(None)
+            list_snr_ch_1_coloc.append(None)
+            list_spot_size_ch_1_coloc.append(None)
+            list_total_spot_int_ch_1_coloc.append(None)
+            list_spot_amplitude_ch_1_coloc.append(None)
+            list_spot_sigma_ch_1_coloc.append(None)
+            list_int_ch_1_not_coloc.append(None)
+            list_snr_ch_1_not_coloc.append(None)
+            list_spot_size_ch_1_not_coloc.append(None)
+            list_total_spot_int_ch_1_not_coloc.append(None)
+            list_spot_amplitude_ch_1_not_coloc.append(None)
+            list_spot_sigma_ch_1_not_coloc.append(None)
+
+        list_efficiency_ml.append(extracted['efficiency_cells'])
+        list_efficiency_manual.append(extracted['efficiency_manual'])
+        if verbose:
+            print('-----------------------------------')
+    
+    # Apply filtering if specified
+    if min_avg_spots_threshold is not None:
+        if verbose:
+            print(f"\n=== Cell Filtering (min_avg_spots_threshold={min_avg_spots_threshold}) ===")
+        total_kept, total_excluded = 0, 0
+        
+        for cond_idx in range(len(list_folder_substrings)):
+            avg_spots_data = list_average_number_spots[cond_idx]
+            if avg_spots_data is None:
+                continue
+            
+            keep_mask = [avg >= min_avg_spots_threshold if avg is not None and not np.isnan(avg) else False 
+                        for avg in avg_spots_data]
+            n_kept, n_excluded = sum(keep_mask), len(keep_mask) - sum(keep_mask)
+            total_kept += n_kept
+            total_excluded += n_excluded
+            
+            if verbose:
+                print(f"  {list_folder_substrings[cond_idx]}: {n_kept}/{len(keep_mask)} cells kept")
+            
+            def filter_list(data_list):
+                return [d for d, keep in zip(data_list, keep_mask) if keep] if data_list else None
+            
+            list_int_ch_0[cond_idx] = filter_list(list_int_ch_0[cond_idx])
+            list_snr_ch_0[cond_idx] = filter_list(list_snr_ch_0[cond_idx])
+            list_spot_size_ch_0[cond_idx] = filter_list(list_spot_size_ch_0[cond_idx])
+            list_total_spot_int_ch_0[cond_idx] = filter_list(list_total_spot_int_ch_0[cond_idx])
+            list_spot_amplitude_ch_0[cond_idx] = filter_list(list_spot_amplitude_ch_0[cond_idx])
+            list_spot_sigma_ch_0[cond_idx] = filter_list(list_spot_sigma_ch_0[cond_idx])
+            list_int_ch_1[cond_idx] = filter_list(list_int_ch_1[cond_idx])
+            list_snr_ch_1[cond_idx] = filter_list(list_snr_ch_1[cond_idx])
+            list_spot_size_ch_1[cond_idx] = filter_list(list_spot_size_ch_1[cond_idx])
+            list_total_spot_int_ch_1[cond_idx] = filter_list(list_total_spot_int_ch_1[cond_idx])
+            list_spot_amplitude_ch_1[cond_idx] = filter_list(list_spot_amplitude_ch_1[cond_idx])
+            list_spot_sigma_ch_1[cond_idx] = filter_list(list_spot_sigma_ch_1[cond_idx])
+            # Filter colocalized / not colocalized lists
+            list_int_ch_0_coloc[cond_idx] = filter_list(list_int_ch_0_coloc[cond_idx])
+            list_snr_ch_0_coloc[cond_idx] = filter_list(list_snr_ch_0_coloc[cond_idx])
+            list_spot_size_ch_0_coloc[cond_idx] = filter_list(list_spot_size_ch_0_coloc[cond_idx])
+            list_total_spot_int_ch_0_coloc[cond_idx] = filter_list(list_total_spot_int_ch_0_coloc[cond_idx])
+            list_spot_amplitude_ch_0_coloc[cond_idx] = filter_list(list_spot_amplitude_ch_0_coloc[cond_idx])
+            list_spot_sigma_ch_0_coloc[cond_idx] = filter_list(list_spot_sigma_ch_0_coloc[cond_idx])
+            list_int_ch_1_coloc[cond_idx] = filter_list(list_int_ch_1_coloc[cond_idx])
+            list_snr_ch_1_coloc[cond_idx] = filter_list(list_snr_ch_1_coloc[cond_idx])
+            list_spot_size_ch_1_coloc[cond_idx] = filter_list(list_spot_size_ch_1_coloc[cond_idx])
+            list_total_spot_int_ch_1_coloc[cond_idx] = filter_list(list_total_spot_int_ch_1_coloc[cond_idx])
+            list_spot_amplitude_ch_1_coloc[cond_idx] = filter_list(list_spot_amplitude_ch_1_coloc[cond_idx])
+            list_spot_sigma_ch_1_coloc[cond_idx] = filter_list(list_spot_sigma_ch_1_coloc[cond_idx])
+            list_int_ch_0_not_coloc[cond_idx] = filter_list(list_int_ch_0_not_coloc[cond_idx])
+            list_snr_ch_0_not_coloc[cond_idx] = filter_list(list_snr_ch_0_not_coloc[cond_idx])
+            list_spot_size_ch_0_not_coloc[cond_idx] = filter_list(list_spot_size_ch_0_not_coloc[cond_idx])
+            list_total_spot_int_ch_0_not_coloc[cond_idx] = filter_list(list_total_spot_int_ch_0_not_coloc[cond_idx])
+            list_spot_amplitude_ch_0_not_coloc[cond_idx] = filter_list(list_spot_amplitude_ch_0_not_coloc[cond_idx])
+            list_spot_sigma_ch_0_not_coloc[cond_idx] = filter_list(list_spot_sigma_ch_0_not_coloc[cond_idx])
+            list_int_ch_1_not_coloc[cond_idx] = filter_list(list_int_ch_1_not_coloc[cond_idx])
+            list_snr_ch_1_not_coloc[cond_idx] = filter_list(list_snr_ch_1_not_coloc[cond_idx])
+            list_spot_size_ch_1_not_coloc[cond_idx] = filter_list(list_spot_size_ch_1_not_coloc[cond_idx])
+            list_total_spot_int_ch_1_not_coloc[cond_idx] = filter_list(list_total_spot_int_ch_1_not_coloc[cond_idx])
+            list_spot_amplitude_ch_1_not_coloc[cond_idx] = filter_list(list_spot_amplitude_ch_1_not_coloc[cond_idx])
+            list_spot_sigma_ch_1_not_coloc[cond_idx] = filter_list(list_spot_sigma_ch_1_not_coloc[cond_idx])
+            list_number_spots[cond_idx] = filter_list(list_number_spots[cond_idx])
+            list_frames[cond_idx] = filter_list(list_frames[cond_idx])
+            list_average_number_spots[cond_idx] = filter_list(list_average_number_spots[cond_idx].tolist()) if list_average_number_spots[cond_idx] is not None else None
+            list_efficiency_ml[cond_idx] = filter_list(list_efficiency_ml[cond_idx])
+            list_efficiency_manual[cond_idx] = filter_list(list_efficiency_manual[cond_idx])
+        
+        if verbose:
+            print(f"  TOTAL: {total_kept}/{total_kept + total_excluded} cells kept\n")
+
+    return {
+        'directories': list_directories, 'int_ch_0': list_int_ch_0, 'int_ch_1': list_int_ch_1,
+        'snr_ch_0': list_snr_ch_0, 'snr_ch_1': list_snr_ch_1,
+        'spot_size_ch_0': list_spot_size_ch_0, 'spot_size_ch_1': list_spot_size_ch_1,
+        'total_spot_int_ch_0': list_total_spot_int_ch_0, 'total_spot_int_ch_1': list_total_spot_int_ch_1,
+        'spot_amplitude_ch_0': list_spot_amplitude_ch_0, 'spot_amplitude_ch_1': list_spot_amplitude_ch_1,
+        'spot_sigma_ch_0': list_spot_sigma_ch_0, 'spot_sigma_ch_1': list_spot_sigma_ch_1,
+        # Colocalized trajectory-level data
+        'int_ch_0_coloc': list_int_ch_0_coloc, 'int_ch_1_coloc': list_int_ch_1_coloc,
+        'snr_ch_0_coloc': list_snr_ch_0_coloc, 'snr_ch_1_coloc': list_snr_ch_1_coloc,
+        'spot_size_ch_0_coloc': list_spot_size_ch_0_coloc, 'spot_size_ch_1_coloc': list_spot_size_ch_1_coloc,
+        'total_spot_int_ch_0_coloc': list_total_spot_int_ch_0_coloc, 'total_spot_int_ch_1_coloc': list_total_spot_int_ch_1_coloc,
+        'spot_amplitude_ch_0_coloc': list_spot_amplitude_ch_0_coloc, 'spot_amplitude_ch_1_coloc': list_spot_amplitude_ch_1_coloc,
+        'spot_sigma_ch_0_coloc': list_spot_sigma_ch_0_coloc, 'spot_sigma_ch_1_coloc': list_spot_sigma_ch_1_coloc,
+        # Non-colocalized trajectory-level data
+        'int_ch_0_not_coloc': list_int_ch_0_not_coloc, 'int_ch_1_not_coloc': list_int_ch_1_not_coloc,
+        'snr_ch_0_not_coloc': list_snr_ch_0_not_coloc, 'snr_ch_1_not_coloc': list_snr_ch_1_not_coloc,
+        'spot_size_ch_0_not_coloc': list_spot_size_ch_0_not_coloc, 'spot_size_ch_1_not_coloc': list_spot_size_ch_1_not_coloc,
+        'total_spot_int_ch_0_not_coloc': list_total_spot_int_ch_0_not_coloc, 'total_spot_int_ch_1_not_coloc': list_total_spot_int_ch_1_not_coloc,
+        'spot_amplitude_ch_0_not_coloc': list_spot_amplitude_ch_0_not_coloc, 'spot_amplitude_ch_1_not_coloc': list_spot_amplitude_ch_1_not_coloc,
+        'spot_sigma_ch_0_not_coloc': list_spot_sigma_ch_0_not_coloc, 'spot_sigma_ch_1_not_coloc': list_spot_sigma_ch_1_not_coloc,
+        'number_spots': list_number_spots, 'frames': list_frames,
+        'number_of_color_channels': list_number_of_color_channels,
+        'average_number_spots': list_average_number_spots,
+        'efficiency_ml': list_efficiency_ml, 'efficiency_manual': list_efficiency_manual,
+    }
+
 
 __all__ = [
     'get_folder_substrings_and_names',

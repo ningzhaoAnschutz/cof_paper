@@ -20,20 +20,93 @@ from matplotlib.patches import Ellipse
 
 
 def plot_swarm_plot(
-    conditions_data, condition_labels, x_label="", y_label="Mean Value", title="",
+    conditions_data, condition_labels, x_label="", y_label=None, title="",
     figsize=(6, 4), tick_size=14, swarm_color="black", y_lim=None, show_stats=False,
     only_significant=True, save_dir=None, plot_name='temp', max_percentile_significance=99.5,
     x_tick_rotation=0, show_n=True, swarm_size=6, min_spots_threshold=None,
+    cell_summary='median',
 ):
     """
     Create a boxplot with swarm overlay and optional statistical comparisons.
-    
+
     Each element in conditions_data should be an iterable of NumPy arrays,
     where each array represents one cell/repetition of a given condition.
+    For each cell, a single summary statistic (mean or median) is computed
+    from its array of spot measurements and plotted as one dot in the swarm.
+
+    Parameters
+    ----------
+    conditions_data : list of list of array-like
+        Outer list: one element per condition. Inner list: one NumPy array
+        per cell, containing all spot-level measurements for that cell.
+    condition_labels : list of str
+        Display labels for each condition (same length as conditions_data).
+    x_label : str, optional
+        Label for the x-axis. Default is "".
+    y_label : str or None, optional
+        Label for the y-axis. If None (default), automatically set to
+        "Median Value" or "Mean Value" based on ``cell_summary``.
+    title : str, optional
+        Plot title. Default is "".
+    figsize : tuple, optional
+        Figure size as (width, height). Default is (6, 4).
+    tick_size : int, optional
+        Base font size for tick labels. Default is 14.
+    swarm_color : str, optional
+        Color of the swarm dots. Default is "black".
+    y_lim : tuple or None, optional
+        Y-axis limits as (ymin, ymax). Default is None (auto).
+    show_stats : bool, optional
+        If True, show pairwise Mann-Whitney U significance brackets.
+        Default is False.
+    only_significant : bool, optional
+        If True and show_stats is True, only display significant pairs
+        (p < 0.05). Default is True.
+    save_dir : str or Path or None, optional
+        Directory to save PNG and SVG files. Default is None (no saving).
+    plot_name : str, optional
+        Base filename for saved figures. Default is 'temp'.
+    max_percentile_significance : float, optional
+        Percentile used to set the top of the significance bracket range.
+        Default is 99.5.
+    x_tick_rotation : int, optional
+        Rotation angle for x-axis tick labels. Default is 0.
+    show_n : bool, optional
+        If True, append "(n=...)" to each x-axis label. Default is True.
+    swarm_size : int, optional
+        Size of swarm dots. Default is 6.
+    min_spots_threshold : int or None, optional
+        Minimum number of valid spots required for a cell to be included.
+        Cells below this threshold are excluded. Default is None (no filter).
+    cell_summary : str, optional
+        Summary statistic to compute per cell.  Must be ``'mean'`` or
+        ``'median'``.  Each dot in the swarm plot represents this statistic
+        computed over all spots detected in that cell.  Default is
+        ``'median'``.
+
+        Example – switch to mean::
+
+            ld.plot_swarm_plot(
+                data_dict['int_ch_0'], list_names,
+                cell_summary='mean',       # each dot = np.nanmean per cell
+                y_label='Mean Intensity',   # update axis label to match
+                ...
+            )
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+        The Axes object for further customization.
     """
+    if cell_summary not in ('mean', 'median'):
+        raise ValueError(f"cell_summary must be 'mean' or 'median', got '{cell_summary}'")
+    if y_label is None:
+        y_label = "Median Value" if cell_summary == 'median' else "Mean Value"
+    _agg_func = np.nanmean if cell_summary == 'mean' else np.nanmedian
+
     sns.set_style("ticks")
     
-    mean_values, condition_list = [], []
+    summary_values, condition_list = [], []
     cell_counts = {label: 0 for label in condition_labels}
     cells_excluded = {label: 0 for label in condition_labels}
     
@@ -47,8 +120,8 @@ def plot_swarm_plot(
             if min_spots_threshold is not None and valid_spots < min_spots_threshold:
                 cells_excluded[condition_labels[cond_idx]] += 1
                 continue
-            rep_mean = np.nanmean(rep)
-            mean_values.append(rep_mean)
+            rep_value = _agg_func(rep)
+            summary_values.append(rep_value)
             condition_list.append(condition_labels[cond_idx])
             cell_counts[condition_labels[cond_idx]] += 1
     
@@ -57,19 +130,20 @@ def plot_swarm_plot(
         for label in condition_labels:
             print(f"  {label}: {cell_counts[label]}/{cell_counts[label] + cells_excluded[label]} cells kept")
     
-    df = pd.DataFrame({"Mean": mean_values, "Condition": condition_list})
+    df = pd.DataFrame({"Value": summary_values, "Condition": condition_list})
     valid_labels = [l for l in condition_labels if cell_counts[l] > 0]
     if not valid_labels:
-        raise ValueError("No valid data found in any condition")
+        print("⚠️  No valid data found in any condition — skipping plot.")
+        return None
     
     fig, ax = plt.subplots(figsize=figsize, facecolor='white')
     ax.set_facecolor('white')
     
-    sns.boxplot(x="Condition", y="Mean", data=df, order=valid_labels, showfliers=False,
+    sns.boxplot(x="Condition", y="Value", data=df, order=valid_labels, showfliers=False,
                 boxprops={'facecolor': 'white', 'edgecolor': 'black'},
                 medianprops={'color': 'red'}, whiskerprops={'color': 'black'},
                 capprops={'color': 'black'}, linewidth=1.5, whis=[5, 95], width=0.5, ax=ax)
-    sns.swarmplot(x="Condition", y="Mean", data=df, order=valid_labels, color=swarm_color, size=swarm_size, ax=ax)
+    sns.swarmplot(x="Condition", y="Value", data=df, order=valid_labels, color=swarm_color, size=swarm_size, ax=ax)
     
     if show_n:
         labels_with_n = [f"{l}\n(n={cell_counts[l]})" for l in valid_labels]
@@ -87,16 +161,16 @@ def plot_swarm_plot(
     plt.tight_layout()
     
     if show_stats and len(valid_labels) > 1:
-        global_max = np.nanpercentile(df["Mean"], max_percentile_significance)
-        global_min = np.nanmin(df["Mean"])
+        global_max = np.nanpercentile(df["Value"], max_percentile_significance)
+        global_min = np.nanmin(df["Value"])
         global_range = global_max - global_min if (global_max - global_min) != 0 else 1
         offset = 0.10 * global_range
         bar_height = 0.02 * global_range
         k = 0
         for i in range(len(valid_labels) - 1):
             for j in range(i + 1, len(valid_labels)):
-                g1 = df[df["Condition"] == valid_labels[i]]["Mean"].dropna()
-                g2 = df[df["Condition"] == valid_labels[j]]["Mean"].dropna()
+                g1 = df[df["Condition"] == valid_labels[i]]["Value"].dropna()
+                g2 = df[df["Condition"] == valid_labels[j]]["Value"].dropna()
                 p = mannwhitneyu(g1, g2, alternative='two-sided')[1] if len(g1) > 0 and len(g2) > 0 else np.nan
                 sig = '****' if p < 0.0001 else '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
                 if only_significant and sig == 'ns':

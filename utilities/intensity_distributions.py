@@ -100,6 +100,7 @@ def load_condition_intensities(
     drop_nonpositive: bool = False,
     strict: bool = True,
     verbose: bool = False,
+    coloc_filter: str = None,
 ) -> dict:
     """Load intensity data for a single experimental condition.
 
@@ -120,6 +121,12 @@ def load_condition_intensities(
         strict: If True, raise on malformed/missing data. If False, skip bad
             folders and report them in the returned skipped_folders list.
         verbose: If True, print progress information.
+        coloc_filter: Trajectory-level colocalization filter.
+            None (default) — include all trajectories (backward-compatible).
+            'colocalized' — include only colocalized trajectories.
+            'not_colocalized' — include only non-colocalized trajectories.
+            A trajectory is colocalized if any of its detections have
+            is_colocalized == True.
 
     Returns:
         dict with keys per_cell, pooled_mean_per_particle,
@@ -128,6 +135,13 @@ def load_condition_intensities(
     Raises:
         ValueError: If no matching folders or no valid data found.
     """
+    # Validate coloc_filter early
+    _valid_filters = ('colocalized', 'not_colocalized')
+    if coloc_filter is not None and coloc_filter not in _valid_filters:
+        raise ValueError(
+            f"coloc_filter must be None, 'colocalized', or "
+            f"'not_colocalized', got '{coloc_filter}'")
+
     dataframes_dir = Path(dataframes_dir)
     if not dataframes_dir.exists():
         raise FileNotFoundError(f"Data directory does not exist: {dataframes_dir}")
@@ -158,9 +172,46 @@ def load_condition_intensities(
             )
             if df[particle_col].isna().any():
                 raise ValueError(f"Missing particle IDs in '{particle_col}'")
+
+            cell_name = folder_path.name.replace('results_', '')
+
+            # ── Apply colocalization filter ────────────────────
+            if coloc_filter is not None:
+                if 'is_colocalized' not in df.columns:
+                    if verbose:
+                        print(f"  SKIP {cell_name}: "
+                              f"no 'is_colocalized' column")
+                    skipped_folders.append({
+                        'folder': folder_path.name,
+                        'reason': "no 'is_colocalized' column"
+                    })
+                    continue
+
+                traj_coloc = df.groupby(particle_col)[
+                    'is_colocalized'].any()
+
+                if coloc_filter == 'colocalized':
+                    keep = traj_coloc[traj_coloc].index
+                else:
+                    keep = traj_coloc[~traj_coloc].index
+
+                df = df[df[particle_col].isin(keep)]
+
+                if df.empty:
+                    if verbose:
+                        print(f"  SKIP {cell_name}: no matching "
+                              f"trajectories "
+                              f"(coloc_filter='{coloc_filter}')")
+                    skipped_folders.append({
+                        'folder': folder_path.name,
+                        'reason': f"no matching trajectories "
+                                  f"(coloc_filter='{coloc_filter}')"
+                    })
+                    continue
+            # ───────────────────────────────────────────────────
+
             cell_all_timepoints = df[int_col].values.copy()
             particle_means = df.groupby(particle_col)[int_col].mean().values
-            cell_name = folder_path.name.replace('results_', '')
             per_cell.append({
                 'cell_name': cell_name,
                 'mean_per_particle': particle_means,
