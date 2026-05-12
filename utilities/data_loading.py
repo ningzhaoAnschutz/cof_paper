@@ -152,6 +152,31 @@ def _get_particle_column(tracking_df):
     return None
 
 
+def _extract_trajectory_means(tracking_df, metric_column):
+    """Compute time-averaged metric values per trajectory.
+
+    If a particle column exists, groups by particle and returns the
+    mean of ``metric_column`` per trajectory.  Otherwise, returns
+    the raw column values (one per row).
+
+    Parameters
+    ----------
+    tracking_df : pd.DataFrame
+        Tracking data for one cell.
+    metric_column : str
+        Column name of the metric (e.g., 'spot_int_ch_0').
+
+    Returns
+    -------
+    np.ndarray
+        One value per trajectory (or per row if no particle column).
+    """
+    particle_col = _get_particle_column(tracking_df)
+    if particle_col is not None and metric_column in tracking_df.columns:
+        return tracking_df.groupby(particle_col)[metric_column].mean().values
+    return tracking_df[metric_column].values
+
+
 def _extract_trajectory_data_by_colocalization(tracking_df, metric_column):
     """
     Compute time-averaged metric values split by colocalization status.
@@ -323,11 +348,25 @@ def extract_data_from_folders(
                     f"{dataset}_ch_{channel}_mean": mean_data,
                     f"{dataset}_ch_{channel}_median": median_data,
                     f"{dataset}_ch_{channel}_std": std_data,
-                    f"{dataset}_ch_{channel}_data": list_data,
+                    f"{dataset}_ch_{channel}_data": [
+                        _extract_trajectory_means(df, selected_field)
+                        for df in list_of_tracking_dataframes
+                    ],
                     f"{dataset}_ch_{channel}_coloc_data": list_coloc_data,
                     f"{dataset}_ch_{channel}_not_coloc_data": list_not_coloc_data,
                 }
             )
+    # Count unique trajectories per cell
+    list_n_trajectories = []
+    for tracking_df in list_of_tracking_dataframes:
+        particle_col = _get_particle_column(tracking_df)
+        if particle_col is not None:
+            n_traj = tracking_df[particle_col].nunique()
+        else:
+            n_traj = len(tracking_df)
+        list_n_trajectories.append(n_traj)
+    extracted_data_dict["n_trajectories"] = list_n_trajectories
+
     return extracted_data_dict
 
 
@@ -371,6 +410,7 @@ def aggregate_folder_data(
     list_number_spots, list_frames = [], []
     list_number_of_color_channels, list_average_number_spots = [], []
     list_efficiency_ml, list_efficiency_manual = [], []
+    list_n_trajectories = []
 
     if list_folder_substring_to_avoid is None:
         list_folder_substring_to_avoid = [""] * len(list_folder_substrings)
@@ -402,6 +442,7 @@ def aggregate_folder_data(
         )
         list_average_number_spots.append(avg_spots)
         list_directories.append(extracted)
+        list_n_trajectories.append(extracted.get("n_trajectories"))
 
         # Channel 0
         list_int_ch_0.append(extracted.get("spot_int_ch_0_data"))
@@ -622,6 +663,9 @@ def aggregate_folder_data(
             )
             list_number_spots[cond_idx] = filter_list(list_number_spots[cond_idx])
             list_frames[cond_idx] = filter_list(list_frames[cond_idx])
+            list_n_trajectories[cond_idx] = filter_list(
+                list_n_trajectories[cond_idx]
+            )
             list_average_number_spots[cond_idx] = (
                 filter_list(list_average_number_spots[cond_idx].tolist())
                 if list_average_number_spots[cond_idx] is not None
@@ -681,6 +725,7 @@ def aggregate_folder_data(
         "average_number_spots": list_average_number_spots,
         "efficiency_ml": list_efficiency_ml,
         "efficiency_manual": list_efficiency_manual,
+        "n_trajectories": list_n_trajectories,
     }
 
 

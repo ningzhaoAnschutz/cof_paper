@@ -52,6 +52,7 @@ from .plotting import (
     plot_efficiency_vs_intensity_scatter,
     plot_efficiency_vs_intensity_scatter_means,
     plot_swarm_plot,
+    plot_swarm_plot_grouped,
     plot_swarm_plot_efficiency,
 )
 
@@ -73,6 +74,7 @@ __all__ = [
     "aggregate_folder_data",
     # Plotting functions
     "plot_swarm_plot",
+    "plot_swarm_plot_grouped",
     "plot_swarm_plot_efficiency",
     "plot_efficiency_vs_intensity_scatter",
     "plot_efficiency_vs_intensity_scatter_means",

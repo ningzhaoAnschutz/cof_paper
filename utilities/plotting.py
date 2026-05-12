@@ -40,6 +40,8 @@ def plot_swarm_plot(
     swarm_size=6,
     min_spots_threshold=None,
     cell_summary="median",
+    show_n_trajectories=True,
+    trajectory_counts=None,
 ):
     """
     Create a boxplot with swarm overlay and optional statistical comparisons.
@@ -108,6 +110,19 @@ def plot_swarm_plot(
                 ...
             )
 
+    show_n_trajectories : bool, optional
+        If True, display the total number of trajectories alongside the
+        cell count on the x-axis labels (e.g. ``n=12 cells, 43 traj``).
+        Default is True.
+    trajectory_counts : list of list of int, or None, optional
+        Per-cell trajectory counts, structured identically to
+        ``conditions_data``.  When provided, these counts are used
+        instead of ``len(rep)`` to compute trajectory totals.  Pass
+        ``data_dict['n_trajectories']`` for plots that use all-trajectory
+        data (e.g. ``'int_ch_0'``).  For colocalization-filtered data
+        (e.g. ``'int_ch_0_coloc'``), omit this parameter — the array
+        lengths already equal the trajectory count.  Default is None.
+
     Returns
     -------
     ax : matplotlib.axes.Axes
@@ -126,14 +141,16 @@ def plot_swarm_plot(
     summary_values, condition_list = [], []
     cell_counts = {label: 0 for label in condition_labels}
     cells_excluded = {label: 0 for label in condition_labels}
+    traj_counts = {label: 0 for label in condition_labels}
 
     for cond_idx, repetitions in enumerate(conditions_data):
         if repetitions is None:
             continue
-        for rep in repetitions:
+        for rep_idx, rep in enumerate(repetitions):
             if rep is None:
                 continue
-            valid_spots = np.sum(~np.isnan(np.asarray(rep).flatten()))
+            valid_rep = np.asarray(rep).flatten()
+            valid_spots = np.sum(~np.isnan(valid_rep))
             if min_spots_threshold is not None and valid_spots < min_spots_threshold:
                 cells_excluded[condition_labels[cond_idx]] += 1
                 continue
@@ -141,6 +158,17 @@ def plot_swarm_plot(
             summary_values.append(rep_value)
             condition_list.append(condition_labels[cond_idx])
             cell_counts[condition_labels[cond_idx]] += 1
+            if show_n_trajectories:
+                label = condition_labels[cond_idx]
+                if (
+                    trajectory_counts is not None
+                    and trajectory_counts[cond_idx] is not None
+                ):
+                    traj_counts[label] += int(
+                        trajectory_counts[cond_idx][rep_idx]
+                    )
+                else:
+                    traj_counts[label] += int(valid_spots)
 
     if min_spots_threshold is not None:
         print(f"\n=== Cell Filtering (min_spots_threshold={min_spots_threshold}) ===")
@@ -183,14 +211,40 @@ def plot_swarm_plot(
     )
 
     if show_n:
-        labels_with_n = [f"{label}\n(n={cell_counts[label]})" for label in valid_labels]
-        ax.set_xticklabels(
-            labels_with_n,
-            fontname="Arial",
-            fontsize=tick_size,
-            rotation=x_tick_rotation,
-            ha="center",
+        # Auto-detect cell-level data: if traj count == cell count for all
+        # conditions, the data is already one scalar per cell (e.g. efficiency,
+        # average_number_spots) and showing "traj" is meaningless.
+        _traj_is_meaningful = show_n_trajectories and any(
+            traj_counts[label] != cell_counts[label] for label in valid_labels
         )
+        # Build multi-line labels: name on line 1, counts on lines below
+        ax.set_xticklabels([""] * len(valid_labels))  # clear default labels
+        for idx, label in enumerate(valid_labels):
+            # Line 1: condition name
+            ax.text(
+                idx, -0.02, label,
+                transform=ax.get_xaxis_transform(),
+                ha="center", va="top",
+                fontsize=tick_size, fontname="Arial",
+                color="black",
+            )
+            # Line 2: cell count
+            ax.text(
+                idx, -0.07, f"cells={cell_counts[label]}",
+                transform=ax.get_xaxis_transform(),
+                ha="center", va="top",
+                fontsize=tick_size, fontname="Arial",
+                color="black",
+            )
+            # Line 3: trajectory count (only if meaningful)
+            if _traj_is_meaningful:
+                ax.text(
+                    idx, -0.12, f"traj={traj_counts[label]}",
+                    transform=ax.get_xaxis_transform(),
+                    ha="center", va="top",
+                    fontsize=tick_size, fontname="Arial",
+                    color="black",
+                )
     else:
         ax.set_xticklabels(
             valid_labels,
@@ -256,6 +310,350 @@ def plot_swarm_plot(
 
     if save_dir is not None:
         save_dir = Path(save_dir)
+        plt.savefig(save_dir / f"{plot_name}.png", dpi=600, bbox_inches="tight")
+        plt.savefig(save_dir / f"{plot_name}.svg", dpi=600, bbox_inches="tight")
+
+    plt.show()
+    return ax
+
+
+def plot_swarm_plot_grouped(
+    data_sources,
+    condition_labels,
+    x_label="",
+    y_label=None,
+    title="",
+    figsize=(8, 4),
+    tick_size=14,
+    y_lim=None,
+    show_stats=False,
+    only_significant=True,
+    save_dir=None,
+    plot_name="temp_grouped",
+    max_percentile_significance=99.5,
+    x_tick_rotation=0,
+    show_n=True,
+    swarm_size=5,
+    min_spots_threshold=None,
+    cell_summary="median",
+    show_n_trajectories=True,
+    group_colors=None,
+    **kwargs,
+):
+    """
+    Create a grouped boxplot with swarm overlay comparing sub-populations.
+
+    Each condition shows side-by-side sub-groups (e.g. colocalized vs
+    non-colocalized), distinguished by color.
+
+    Parameters
+    ----------
+    data_sources : list of (data, label) tuples
+        Each tuple contains ``(conditions_data, group_label)``.
+        ``conditions_data`` has the same structure as in
+        :func:`plot_swarm_plot` (list of list of array-like, one per
+        condition, one array per cell).
+
+        Example::
+
+            data_sources=[
+                (data_dict['int_ch_0_coloc'],     'Coloc'),
+                (data_dict['int_ch_0_not_coloc'], 'Not Coloc'),
+            ]
+
+    condition_labels : list of str
+        Display labels for each condition.
+    x_label : str, optional
+        Label for the x-axis. Default is ``""``.
+    y_label : str or None, optional
+        Label for the y-axis. If None, auto-set from ``cell_summary``.
+    title : str, optional
+        Plot title. Default is ``""``.
+    figsize : tuple, optional
+        Figure size. Default is ``(8, 4)``.
+    tick_size : int, optional
+        Base font size. Default is 14.
+    y_lim : tuple or None, optional
+        Y-axis limits. Default is None.
+    show_stats : bool, optional
+        If True, show within-condition pairwise significance between
+        groups.  Default is False.
+    only_significant : bool, optional
+        If True and show_stats is True, only show significant pairs.
+        Default is True.
+    save_dir : str or Path or None, optional
+        Directory to save PNG and SVG. Default is None.
+    plot_name : str, optional
+        Base filename for saved figures. Default is ``'temp_grouped'``.
+    max_percentile_significance : float, optional
+        Percentile for significance bracket placement. Default is 99.5.
+    x_tick_rotation : int, optional
+        Rotation of x-axis tick labels. Default is 0.
+    show_n : bool, optional
+        If True, show sample sizes below condition labels. Default is True.
+    swarm_size : int, optional
+        Size of swarm dots. Default is 5.
+    min_spots_threshold : int or None, optional
+        Minimum valid spots for a cell to be included. Default is None.
+    cell_summary : str, optional
+        ``'mean'`` or ``'median'``. Default is ``'median'``.
+    show_n_trajectories : bool, optional
+        If True and trajectory counts are meaningful, show them below
+        condition labels. Default is True.
+    group_colors : list of str or None, optional
+        Colors for each group. Default uses a curated palette.
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+        The Axes object for further customization.
+    """
+    if cell_summary not in ("mean", "median"):
+        raise ValueError(
+            f"cell_summary must be 'mean' or 'median', got '{cell_summary}'"
+        )
+    if y_label is None:
+        y_label = "Median Value" if cell_summary == "median" else "Mean Value"
+    _agg_func = np.nanmean if cell_summary == "mean" else np.nanmedian
+
+    if group_colors is None:
+        group_colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3"]
+
+    sns.set_style("ticks")
+    mpl.rcParams["font.family"] = "Arial"
+    mpl.rcParams["text.color"] = "black"
+    mpl.rcParams["axes.labelcolor"] = "black"
+    mpl.rcParams["xtick.color"] = "black"
+    mpl.rcParams["ytick.color"] = "black"
+
+    group_labels = [gs[1] for gs in data_sources]
+    palette = {
+        gl: group_colors[i % len(group_colors)]
+        for i, gl in enumerate(group_labels)
+    }
+
+    # Build DataFrame with Condition + Group columns
+    rows = []
+    # Track per-condition, per-group counts
+    cell_counts = {
+        label: {gl: 0 for gl in group_labels} for label in condition_labels
+    }
+    traj_counts = {
+        label: {gl: 0 for gl in group_labels} for label in condition_labels
+    }
+
+    for group_idx, (group_data, group_label) in enumerate(data_sources):
+        for cond_idx, repetitions in enumerate(group_data):
+            if repetitions is None:
+                continue
+            cond_label = condition_labels[cond_idx]
+            for rep in repetitions:
+                if rep is None:
+                    continue
+                valid_rep = np.asarray(rep).flatten()
+                valid_spots = np.sum(~np.isnan(valid_rep))
+                if (
+                    min_spots_threshold is not None
+                    and valid_spots < min_spots_threshold
+                ):
+                    continue
+                rows.append(
+                    {
+                        "Value": _agg_func(rep),
+                        "Condition": cond_label,
+                        "Group": group_label,
+                    }
+                )
+                cell_counts[cond_label][group_label] += 1
+                if show_n_trajectories:
+                    traj_counts[cond_label][group_label] += int(valid_spots)
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        print("⚠️  No valid data found — skipping grouped plot.")
+        return None
+
+    valid_labels = [
+        label
+        for label in condition_labels
+        if any(cell_counts[label][gl] > 0 for gl in group_labels)
+    ]
+    if not valid_labels:
+        print("⚠️  No valid conditions — skipping grouped plot.")
+        return None
+
+    fig, ax = plt.subplots(figsize=figsize, facecolor="white")
+    ax.set_facecolor("white")
+
+    sns.boxplot(
+        x="Condition",
+        y="Value",
+        hue="Group",
+        data=df,
+        order=valid_labels,
+        hue_order=group_labels,
+        showfliers=False,
+        boxprops={"facecolor": "white", "edgecolor": "black"},
+        medianprops={"color": "red"},
+        whiskerprops={"color": "black"},
+        capprops={"color": "black"},
+        linewidth=1.5,
+        whis=[5, 95],
+        width=0.6,
+        ax=ax,
+    )
+    sns.swarmplot(
+        x="Condition",
+        y="Value",
+        hue="Group",
+        data=df,
+        order=valid_labels,
+        hue_order=group_labels,
+        palette=palette,
+        dodge=True,
+        size=swarm_size,
+        ax=ax,
+    )
+
+    # Fix legend: use swarm handles (colored dots) not box handles (white)
+    handles, labels_legend = ax.get_legend_handles_labels()
+    n_groups = len(group_labels)
+    legend = ax.legend(
+        handles[n_groups: 2 * n_groups],
+        labels_legend[n_groups: 2 * n_groups],
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=n_groups,
+        fontsize=tick_size - 2,
+        frameon=True,
+        facecolor="white",
+        edgecolor="black",
+        prop={"family": "Arial", "size": tick_size - 2},
+    )
+    for text in legend.get_texts():
+        text.set_color("black")
+
+    # X-axis labels with counts
+    if show_n:
+        ax.set_xticklabels([""] * len(valid_labels))
+        _traj_is_meaningful = show_n_trajectories and any(
+            traj_counts[label][gl] != cell_counts[label][gl]
+            for label in valid_labels
+            for gl in group_labels
+        )
+        for idx, label in enumerate(valid_labels):
+            # Line 1: condition name
+            ax.text(
+                idx, -0.02, label,
+                transform=ax.get_xaxis_transform(),
+                ha="center", va="top",
+                fontsize=tick_size, fontname="Arial",
+                color="black",
+            )
+            # Line 2: cell counts per group (e.g. "cells=12 | 10")
+            cell_str = " | ".join(
+                str(cell_counts[label][gl]) for gl in group_labels
+            )
+            ax.text(
+                idx, -0.07, f"cells={cell_str}",
+                transform=ax.get_xaxis_transform(),
+                ha="center", va="top",
+                fontsize=tick_size, fontname="Arial",
+                color="black",
+            )
+            # Line 3: trajectory counts per group
+            if _traj_is_meaningful:
+                traj_str = " | ".join(
+                    str(traj_counts[label][gl]) for gl in group_labels
+                )
+                ax.text(
+                    idx, -0.12, f"traj={traj_str}",
+                    transform=ax.get_xaxis_transform(),
+                    ha="center", va="top",
+                    fontsize=tick_size, fontname="Arial",
+                    color="black",
+                )
+    else:
+        ax.set_xticklabels(
+            valid_labels,
+            fontname="Arial",
+            fontsize=tick_size,
+            rotation=x_tick_rotation,
+            ha="right" if x_tick_rotation else "center",
+        )
+
+    ax.set_xlabel(x_label, fontsize=tick_size + 2, fontname="Arial", color="black")
+    ax.set_ylabel(y_label, fontsize=tick_size + 2, fontname="Arial", color="black")
+    ax.set_title(title, fontsize=tick_size + 4, fontname="Arial", color="black")
+    if y_lim is not None and not show_stats:
+        ax.set_ylim(y_lim)
+    ax.tick_params(axis="y", labelsize=tick_size, colors="black")
+    plt.tight_layout()
+
+    # Within-condition pairwise significance between groups
+    if show_stats and len(group_labels) > 1:
+        global_max = np.nanpercentile(df["Value"], max_percentile_significance)
+        global_min = np.nanmin(df["Value"])
+        global_range = (global_max - global_min) if (global_max - global_min) != 0 else 1
+        offset = 0.10 * global_range
+        bar_height = 0.02 * global_range
+
+        for cond_idx, cond_label in enumerate(valid_labels):
+            k = 0
+            for gi in range(len(group_labels) - 1):
+                for gj in range(gi + 1, len(group_labels)):
+                    g1 = df[
+                        (df["Condition"] == cond_label)
+                        & (df["Group"] == group_labels[gi])
+                    ]["Value"].dropna()
+                    g2 = df[
+                        (df["Condition"] == cond_label)
+                        & (df["Group"] == group_labels[gj])
+                    ]["Value"].dropna()
+                    p = (
+                        mannwhitneyu(g1, g2, alternative="two-sided")[1]
+                        if len(g1) > 0 and len(g2) > 0
+                        else np.nan
+                    )
+                    sig = (
+                        "****"
+                        if p < 0.0001
+                        else (
+                            "***"
+                            if p < 0.001
+                            else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
+                        )
+                    )
+                    if only_significant and sig == "ns":
+                        continue
+                    # Position brackets over the sub-groups within this condition
+                    n_groups_here = len(group_labels)
+                    width = 0.6  # boxplot width
+                    group_width = width / n_groups_here
+                    x_left = cond_idx - width / 2 + group_width * (gi + 0.5)
+                    x_right = cond_idx - width / 2 + group_width * (gj + 0.5)
+                    y_line = global_max + offset * (k + 1)
+                    ax.plot(
+                        [x_left, x_left, x_right, x_right],
+                        [y_line, y_line + bar_height, y_line + bar_height, y_line],
+                        lw=1.2,
+                        c="k",
+                    )
+                    ax.text(
+                        (x_left + x_right) * 0.5,
+                        y_line + bar_height - 0.01 * global_range,
+                        sig,
+                        ha="center",
+                        va="bottom",
+                        color="k",
+                        fontsize=tick_size - 2,
+                        fontname="Arial",
+                    )
+                    k += 1
+
+    if save_dir is not None:
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
         plt.savefig(save_dir / f"{plot_name}.png", dpi=600, bbox_inches="tight")
         plt.savefig(save_dir / f"{plot_name}.svg", dpi=600, bbox_inches="tight")
 
@@ -920,6 +1318,7 @@ def plot_efficiency_vs_intensity_kde(
 
 __all__ = [
     "plot_swarm_plot",
+    "plot_swarm_plot_grouped",
     "plot_swarm_plot_efficiency",
     "plot_efficiency_vs_intensity_scatter",
     "plot_efficiency_vs_intensity_scatter_means",
