@@ -151,6 +151,8 @@ def plot_swarm_plot(
                 continue
             valid_rep = np.asarray(rep).flatten()
             valid_spots = np.sum(~np.isnan(valid_rep))
+            if valid_spots == 0:
+                continue
             if min_spots_threshold is not None and valid_spots < min_spots_threshold:
                 cells_excluded[condition_labels[cond_idx]] += 1
                 continue
