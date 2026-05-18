@@ -24,14 +24,13 @@ repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from plot_style import (
+from plotting import (
     TRACE_GRAY,
     TRACE_GREEN,
-    save_figure,
     set_publication_style,
     style_axes,
 )
-from burst_quantification_from_matrix import runs_from_binary, _off_baseline_bar
+from burst_quantification import runs_from_binary, _off_baseline_bar
 
 # ── Config ──────────────────────────────────────────────────────────────────
 RESULTS_ROOT = (

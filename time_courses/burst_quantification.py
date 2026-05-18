@@ -7,7 +7,7 @@ fluorescence time courses.  Rows = trajectories, columns = time points.
 
 Usage (notebook)::
 
-    from burst_quantification_from_matrix import run_burst_quantification
+    from burst_quantification import run_burst_quantification
     result = run_burst_quantification(
         input_matrix=my_matrix,
         output_dir=Path("results/burst_quantification/4sf"),
@@ -16,7 +16,7 @@ Usage (notebook)::
 
 Usage (CLI)::
 
-    python burst_quantification_from_matrix.py \\
+    python burst_quantification.py \\
         --input raw_matrix.npy --output results/burst_quantification/run01 \\
         --dt 5 --threshold 0.05
 """
@@ -33,26 +33,24 @@ import pandas as pd
 from scipy.ndimage import median_filter, uniform_filter1d, gaussian_filter1d
 
 try:
-    from plot_style import (
+    from plotting import (
+        CHANNEL_GREEN,
         CHANNEL_MAGENTA,
         TRACE_BLUE,
         TRACE_GRAY,
-        TRACE_GREEN,
         TRACE_MAGENTA,
-        channel_cmap,
         save_figure,
         set_publication_style,
         style_axes,
         style_legend,
     )
 except ImportError:  # pragma: no cover - supports package-style imports
-    from time_courses.plot_style import (
+    from time_courses.plotting import (
+        CHANNEL_GREEN,
         CHANNEL_MAGENTA,
         TRACE_BLUE,
         TRACE_GRAY,
-        TRACE_GREEN,
         TRACE_MAGENTA,
-        channel_cmap,
         save_figure,
         set_publication_style,
         style_axes,
@@ -129,6 +127,11 @@ def validate_intensity_matrix(matrix, trajectory_ids=None):
     -------
     matrix : ndarray
     trajectory_ids : list[str]
+    valid_rows : ndarray of bool
+        Row mask applied (True = kept).  Returned so companion matrices
+        (e.g. an SNR matrix) can be filtered identically.
+    col_slice : slice
+        Column slice applied to trim empty leading/trailing columns.
     """
     matrix = np.asarray(matrix, dtype=float)
     if matrix.ndim != 2:
@@ -149,7 +152,10 @@ def validate_intensity_matrix(matrix, trajectory_ids=None):
     if np.any(col_has_data):
         first = np.argmax(col_has_data)
         last = len(col_has_data) - np.argmax(col_has_data[::-1])
-        matrix = matrix[:, first:last]
+        col_slice = slice(first, last)
+        matrix = matrix[:, col_slice]
+    else:
+        col_slice = slice(None)
 
     # Auto-generate trajectory IDs if needed
     if trajectory_ids is None:
@@ -157,7 +163,7 @@ def validate_intensity_matrix(matrix, trajectory_ids=None):
     else:
         trajectory_ids = [trajectory_ids[i] for i in np.where(valid_rows)[0]]
 
-    return matrix, trajectory_ids
+    return matrix, trajectory_ids, valid_rows, col_slice
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -527,6 +533,15 @@ def call_bursts(
             threshold_values[i] = float(bar)
             threshold_sources[i] = "processed"
             binary_matrix[i, compare_mask] = (proc_row[compare_mask] >= bar).astype(float)
+        elif threshold_mode == "snr":
+            # SNR is already a self-normalized quality metric.
+            # matrix_for_thresholding contains per-frame SNR values;
+            # threshold is the SNR cutoff (e.g. 3.0).
+            snr_row = matrix_for_thresholding[i]
+            compare_mask = finite & np.isfinite(snr_row)
+            threshold_values[i] = float(threshold)
+            threshold_sources[i] = "snr"
+            binary_matrix[i, compare_mask] = (snr_row[compare_mask] >= threshold).astype(float)
         else:
             raise ValueError(f"Unknown threshold_mode: {threshold_mode}")
 
@@ -696,6 +711,185 @@ def call_bursts(
     return binary_matrix, event_table, trajectory_summary
 
 
+# ---------------------------------------------------------------------------
+# Dual-channel kymograph from pre-loaded matrices
+# ---------------------------------------------------------------------------
+
+def plot_dual_channel_kymograph_from_matrix(
+    ch0_matrix,
+    ch1_matrix,
+    *,
+    output_dir=None,
+    time_interval_seconds=5.0,
+    condition="",
+    normalize="per_trace_percentile",
+    p_lo=1,
+    p_hi=99,
+    sort_by="fraction_on",
+    trajectory_summary=None,
+    max_traces_to_plot=160,
+    ch0_color=None,
+    ch1_color=None,
+    nan_color=(0.0, 0.0, 0.0),
+    figsize=(14, 6),
+    dpi=300,
+    show=False,
+):
+    """Render a dual-channel additive-blend kymograph from two matrices.
+
+    Parameters
+    ----------
+    ch0_matrix : ndarray  (N, T)
+        Channel 0 (folding) intensity matrix.
+    ch1_matrix : ndarray  (N, T)
+        Channel 1 (nascent) intensity matrix.  Must have the same shape.
+    output_dir : Path, optional
+        Directory to save the figure.  If *None*, figure is returned but
+        not saved.
+    time_interval_seconds : float
+        Time per frame (seconds).
+    condition : str
+        Label for the title.
+    normalize : str
+        ``"per_trace_percentile"`` | ``"per_trace_max"`` | ``None``.
+    p_lo, p_hi : float
+        Percentiles for per-trace normalization.
+    sort_by : str
+        ``"fraction_on"`` uses *trajectory_summary* to sort; ``"density"``
+        sorts by number of finite values; ``None`` keeps original order.
+    trajectory_summary : DataFrame, optional
+        Needed when *sort_by="fraction_on"*.
+    max_traces_to_plot : int
+        Cap on displayed trajectories.
+    ch0_color, ch1_color : tuple (r, g, b), optional
+        Override channel colors.  Defaults: ch0=Green, ch1=Magenta.
+    nan_color : tuple
+        RGB for missing data (default black).
+    figsize, dpi : tuple, int
+        Figure size and resolution.
+    show : bool
+        Whether to call ``plt.show()``.
+
+    Returns
+    -------
+    fig : Figure
+    """
+    ch0 = np.asarray(ch0_matrix, dtype=float)
+    ch1 = np.asarray(ch1_matrix, dtype=float)
+    if ch0.shape != ch1.shape:
+        raise ValueError(
+            f"Channel shape mismatch: ch0={ch0.shape} vs ch1={ch1.shape}"
+        )
+
+    N, T = ch0.shape
+    if N == 0:
+        raise ValueError("No trajectories to plot")
+
+    # ── colours ──
+    c0 = ch0_color if ch0_color is not None else CHANNEL_GREEN    # Folding
+    c1 = ch1_color if ch1_color is not None else CHANNEL_MAGENTA  # Nascent
+    c_nan = tuple(float(v) for v in nan_color)
+
+    # ── sorting ──
+    if sort_by == "fraction_on" and trajectory_summary is not None:
+        sort_idx = np.argsort(
+            trajectory_summary["fraction_time_on"].values
+        )[::-1]
+    elif sort_by == "density":
+        density = np.sum(np.isfinite(ch0), axis=1) + np.sum(
+            np.isfinite(ch1), axis=1
+        )
+        sort_idx = np.argsort(-density)
+    else:
+        sort_idx = np.arange(N)
+
+    # ── cap trajectories ──
+    if max_traces_to_plot is not None and len(sort_idx) > max_traces_to_plot:
+        sort_idx = sort_idx[:max_traces_to_plot]
+
+    ch0 = ch0[sort_idx]
+    ch1 = ch1[sort_idx]
+    H = ch0.shape[0]
+
+    # ── normalisation (per-trace, NaN safe) ──
+    def _norm(X, mode, plo, phi):
+        out = np.full_like(X, np.nan)
+        for i in range(X.shape[0]):
+            row = X[i]
+            mask = np.isfinite(row)
+            if not mask.any():
+                continue
+            vals = row[mask]
+            if mode == "per_trace_percentile":
+                lo = np.percentile(vals, plo)
+                hi = np.percentile(vals, phi)
+                scale = max(hi - lo, 1e-9)
+                normed = (row - lo) / scale
+            elif mode == "per_trace_max":
+                mx = max(np.max(vals), 1e-9)
+                normed = row / mx
+            else:  # raw → global percentile fallback
+                all_f = X[np.isfinite(X)]
+                lo = np.percentile(all_f, plo) if all_f.size else 0
+                hi = np.percentile(all_f, phi) if all_f.size else 1
+                scale = max(hi - lo, 1e-9)
+                normed = (row - lo) / scale
+            out[i] = np.clip(normed, 0, 1)
+        return out
+
+    if normalize is not None:
+        ch0_n = _norm(ch0, normalize, p_lo, p_hi)
+        ch1_n = _norm(ch1, normalize, p_lo, p_hi)
+    else:
+        ch0_n = _norm(ch0, "per_trace_percentile", p_lo, p_hi)
+        ch1_n = _norm(ch1, "per_trace_percentile", p_lo, p_hi)
+
+    # ── build RGB image (additive blend) ──
+    img = np.zeros((H, T, 3), dtype=float)
+    nan_both = np.isnan(ch0_n) & np.isnan(ch1_n)
+    img[nan_both, 0] = c_nan[0]
+    img[nan_both, 1] = c_nan[1]
+    img[nan_both, 2] = c_nan[2]
+
+    v0 = np.where(np.isfinite(ch0_n), ch0_n, 0.0)
+    v1 = np.where(np.isfinite(ch1_n), ch1_n, 0.0)
+    for ci in range(3):
+        img[:, :, ci] += v0 * c0[ci] + v1 * c1[ci]
+    img = np.clip(img, 0.0, 1.0)
+
+    # ── time axis ──
+    dt = float(time_interval_seconds)
+    t_max_min = (T - 1) * dt / 60.0
+
+    # ── plot ──
+    set_publication_style()
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi, facecolor="white")
+    ax.imshow(
+        img, aspect="auto", interpolation="nearest", origin="upper",
+        extent=[0, t_max_min, H, 0],
+    )
+    ax.set_xlabel("Time (min)")
+    ax.set_ylabel("Trajectory (sorted)")
+    ax.set_title(
+        f"{condition} - Dual-Channel Kymograph"
+        if condition else "Dual-Channel Kymograph"
+    )
+    style_axes(ax, grid=False)
+    fig.tight_layout()
+
+    if output_dir is not None:
+        plots_dir = Path(output_dir) / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        save_figure(fig, plots_dir / "kymograph_dual_channel", dpi)
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    return fig
+
+
 def plot_burst_results(
     raw_matrix,
     processed_matrix,
@@ -719,6 +913,7 @@ def plot_burst_results(
     threshold=0.05,
     threshold_mode="fraction_of_trace_max",
     off_baseline_quantile=0.25,
+    kymograph_sort_by="density",
 ):
     """Generate 8 diagnostic plots and save as PNG + SVG."""
     set_publication_style()
@@ -754,42 +949,10 @@ def plot_burst_results(
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     save_figure(fig, plots_dir / "mean_trace_raw_vs_processed", plot_dpi)
 
-    # ---- 2. Kymograph: normalized ----
-    sort_idx = np.argsort(trajectory_summary["fraction_time_on"].values)[::-1]
-    n_kymo = min(n_traces, max_traces_to_plot)
-    kymo_idx = sort_idx[:n_kymo]
+    # ---- 2 & 3. Single-channel kymographs: SKIPPED ──────────────────────
+    # Superseded by the dual-channel kymograph (plot_dual_channel_kymograph_from_matrix)
+    # generated in run_burst_analysis.py after QC filtering.
 
-    fig, ax = plt.subplots(1, 1, figsize=kymograph_figsize, facecolor="white")
-    kymo_data = normalized_matrix[kymo_idx]
-    im = ax.imshow(kymo_data, aspect="auto", cmap=channel_cmap("folding_magenta", CHANNEL_MAGENTA),
-                   vmin=0, vmax=1,
-                   interpolation="nearest",
-                   extent=[0, t_min[-1], n_kymo, 0])
-    ax.set_xlabel("Time (min)")
-    ax.set_ylabel("Trajectory (sorted by fraction ON)")
-    ax.set_title(f"{condition} - Normalized Kymograph")
-    style_axes(ax, grid=False)
-    cbar = plt.colorbar(im, ax=ax, label="Normalized folding-channel intensity", shrink=0.8)
-    cbar.ax.tick_params(labelsize=11, colors="black")
-    cbar.outline.set_edgecolor("black")
-    cbar.outline.set_linewidth(1.2)
-    fig.tight_layout()
-    save_figure(fig, plots_dir / "kymograph_normalized", kymograph_dpi)
-
-    # ---- 3. Kymograph: binary ----
-    from matplotlib.colors import ListedColormap
-    cmap_bin = ListedColormap(["#000000", TRACE_MAGENTA])  # OFF=black, ON=magenta (ch0)
-    cmap_bin.set_bad("#000000")
-    fig, ax = plt.subplots(1, 1, figsize=kymograph_figsize, facecolor="white")
-    kymo_bin = binary_matrix[kymo_idx]
-    ax.imshow(kymo_bin, aspect="auto", cmap=cmap_bin, vmin=0, vmax=1,
-              interpolation="nearest", extent=[0, t_min[-1], n_kymo, 0])
-    ax.set_xlabel("Time (min)")
-    ax.set_ylabel("Trajectory (sorted by fraction ON)")
-    ax.set_title(f"{condition} - Binary Kymograph (ON/OFF)")
-    style_axes(ax, grid=False)
-    fig.tight_layout()
-    save_figure(fig, plots_dir / "kymograph_binary", kymograph_dpi)
 
     # ---- 4. Example traces: SKIPPED ──────────────────────────────────────
     # The all-traces PDF (generate_all_traces_pdf.py) supersedes this plot.
@@ -865,6 +1028,7 @@ def plot_burst_results(
 def run_burst_quantification(
     input_path=None,
     input_matrix=None,
+    snr_matrix=None,
     output_dir="burst_results",
     time_interval_seconds=5.0,
     condition="",
@@ -893,6 +1057,7 @@ def run_burst_quantification(
     # Plot params
     kymograph_figsize=(14, 6),
     kymograph_dpi=300,
+    kymograph_sort_by="density",
     max_traces_to_plot=160,
     trace_figsize=(12, 8),
     distribution_figsize=(8, 5),
@@ -927,8 +1092,15 @@ def run_burst_quantification(
         raise ValueError("Provide either input_path or input_matrix")
 
     # 2. Validate
-    raw_matrix, trajectory_ids = validate_intensity_matrix(raw_matrix, trajectory_ids)
+    raw_matrix, trajectory_ids, valid_rows, col_slice = validate_intensity_matrix(
+        raw_matrix, trajectory_ids
+    )
     print(f"  Validated: {raw_matrix.shape[0]} trajectories × {raw_matrix.shape[1]} timepoints")
+
+    # Apply same row/col filtering to SNR matrix (Stage 5 sync)
+    if snr_matrix is not None:
+        snr_matrix = np.asarray(snr_matrix, dtype=float)
+        snr_matrix = snr_matrix[valid_rows][:, col_slice]
 
     # 3. Preprocess
     processed_matrix, qc_table, kept_ids = preprocess_intensity_matrix(
@@ -954,9 +1126,14 @@ def run_burst_quantification(
             "trajectory_summary": pd.DataFrame(), "params": {},
         }
 
-    # Filter raw to match
+    # Filter raw (and SNR) to match kept rows
     keep_idx = qc_table[qc_table["qc_status"] == "kept"]["trajectory_index"].values
     raw_kept = raw_matrix[keep_idx]
+    snr_kept = snr_matrix[keep_idx] if snr_matrix is not None else None
+    if snr_kept is not None:
+        assert snr_kept.shape == raw_kept.shape, (
+            f"SNR/raw shape mismatch after QC: {snr_kept.shape} vs {raw_kept.shape}"
+        )
 
     # 4. Normalize
     normalized_matrix = normalize_matrix(
@@ -965,8 +1142,15 @@ def run_burst_quantification(
     )
 
     # 5. Call bursts
+    # When threshold_mode="snr", threshold the SNR matrix directly;
+    # otherwise threshold the normalized intensity matrix.
+    if threshold_mode == "snr" and snr_kept is not None:
+        thresholding_matrix = snr_kept
+    else:
+        thresholding_matrix = normalized_matrix
+
     binary_matrix, event_table, trajectory_summary = call_bursts(
-        matrix_for_thresholding=normalized_matrix,
+        matrix_for_thresholding=thresholding_matrix,
         raw_matrix=raw_kept,
         processed_matrix=processed_matrix,
         trajectory_ids=kept_ids,
@@ -1064,6 +1248,7 @@ def run_burst_quantification(
             threshold=threshold,
             threshold_mode=threshold_mode,
             off_baseline_quantile=off_baseline_quantile,
+            kymograph_sort_by=kymograph_sort_by,
         )
         print(f"  Plots saved to {output_dir / 'plots'}")
 

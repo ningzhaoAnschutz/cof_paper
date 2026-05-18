@@ -17,12 +17,14 @@ DEFAULT_DPI = 300
 CHANNEL_GREEN = (0.0, 1.0, 0.0)
 CHANNEL_MAGENTA = (1.0, 0.0, 1.0)
 CHANNEL_BLACK = (0.0, 0.0, 0.0)
+CHANNEL_RED = (1.0, 0.0, 0.0)
 
 TRACE_MAGENTA = "#d600d6"
 TRACE_GREEN = "#00a651"
 TRACE_BLUE = "#2b7bba"
 TRACE_GRAY = "#4d4d4d"
 TRACE_ORANGE = "#e6550d"
+TRACE_RED = "#d62728"
 
 
 def set_publication_style() -> None:
