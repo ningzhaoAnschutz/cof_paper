@@ -107,6 +107,13 @@ def generate_pdf(construct_dir: Path, traces_per_page: int = TRACES_PER_PAGE):
                             thr_val, color=OFF_COLOR, linestyle="--",
                             linewidth=0.7, alpha=0.7,
                         )
+                elif threshold_mode == "snr":
+                    # SNR threshold is not on the intensity axis — annotate
+                    ax_int.text(
+                        0.98, 0.95, f"ON/OFF: SNR ≥ {threshold}",
+                        transform=ax_int.transAxes, ha="right", va="top",
+                        fontsize=7, color="gray", fontstyle="italic",
+                    )
 
                 ax_int.set_ylabel("Intensity", fontsize=9)
                 ax_int.set_title(

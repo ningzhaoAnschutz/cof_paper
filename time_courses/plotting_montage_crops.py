@@ -116,10 +116,7 @@ def resolve_lif_path(raw_path, data_root, construct_name) -> Path:
     raise FileNotFoundError(f"Cannot resolve LIF path from metadata: {raw_path}")
 
 
-def minutes_to_frames(times_min, time_interval_seconds: float) -> list[int]:
-    """Convert movie-time minutes to nearest original movie frame indices."""
-    dt = float(time_interval_seconds)
-    return [int(round(float(t) * 60.0 / dt)) for t in times_min]
+
 
 
 def auto_snapshot_frames(n_frames: int, n_snapshots: int = 10) -> list[int]:
@@ -511,8 +508,6 @@ def plot_cell_crop_timecourse_montage(
     trace_norm_mode: str = "raw",
     smooth_window: int = 1,
     gaussian_filter_value: float = 1.0,
-    gaussian_filer_value: float | None = None,
-    gaussian_sigma: float | None = None,
     binary_state=None,
     first_valid_frame: int = 0,
     show_merge: bool = True,
@@ -522,10 +517,8 @@ def plot_cell_crop_timecourse_montage(
     show_crop_time_labels: bool = True,
     fig=None,
     subplot_spec=None,
-    output_path=None,
     panel_label: str | None = None,
     title: str | None = None,
-    show: bool = False,
 ):
     """Plot a trace, ON/OFF bar, and max-Z crop montage for one particle.
 
@@ -539,11 +532,6 @@ def plot_cell_crop_timecourse_montage(
         Sigma for a 2-D Gaussian filter applied to each full max-Z frame
         before crop extraction.  Reduces pixelation in small crops.
         Default ``1.0``.  Set to ``0`` to show raw pixels.
-    gaussian_filer_value : float, optional
-        Backward-compatible alias for the common misspelling of
-        ``gaussian_filter_value``.
-    gaussian_sigma : float, optional
-        Backward-compatible alias for ``gaussian_filter_value``.
     crop_colormap : str or None, optional
         Matplotlib colormap name (e.g. ``"gray"``) to render crops.  When
         set, each channel's crops are drawn in grayscale (or the chosen
@@ -565,15 +553,11 @@ def plot_cell_crop_timecourse_montage(
     _SPINE_W = 1.8    # axis box thickness (pt)
     _TICK_W = 1.4     # tick mark thickness
     _TICK_LEN = 6     # tick length (pt)
-    _TRACE_LW = 1.8   # intensity trace linewidth
+    _TRACE_LW = 2.4   # intensity trace linewidth
     _STEP_LW = 1.6    # ON/OFF step linewidth
 
     image_TZYXC = np.asarray(image_TZYXC)
     channels = [dict(ch) for ch in (channels or DEFAULT_CHANNELS)]
-    if gaussian_filer_value is not None:
-        gaussian_filter_value = gaussian_filer_value
-    if gaussian_sigma is not None:
-        gaussian_filter_value = gaussian_sigma
     gaussian_filter_value = _coerce_gaussian_filter_value(gaussian_filter_value)
     n_frames = image_TZYXC.shape[0]
     snapshot_frames = [
@@ -653,8 +637,7 @@ def plot_cell_crop_timecourse_montage(
             )
         ax_trace.plot(t_min, trace, color=ch["trace_color"], lw=_TRACE_LW, label=ch["label"])
 
-    for frame in snapshot_frames:
-        ax_trace.axvline(frame * dt / 60.0, color="#d0d0d0", lw=0.6, ls="--", zorder=0)
+
     ax_trace.set_xlim(0, x_max)
     ax_trace.set_ylabel("Intensity (a.u.)", fontsize=14, color="black")
     if title:
@@ -789,17 +772,6 @@ def plot_cell_crop_timecourse_montage(
             row_axes.append(ax)
         crop_axes.append(row_axes)
 
-    if standalone:
-        fig.tight_layout()
-
-    if output_path is not None:
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(output_path.with_suffix(".png"), dpi=300, bbox_inches="tight", facecolor="white")
-        fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
-    if show:
-        plt.show()
-
     return fig, {"trace": ax_trace, "state_bar": ax_state, "crops": crop_axes}
 
 
@@ -814,14 +786,26 @@ def generate_representative_montage_pdf(
     n_snapshots: int = 10,
     panel_figsize: tuple | None = None,
     pdf_dpi: int = 200,
+    save_individual_montages: bool = True,
     verbose: bool = True,
     **plot_kwargs,
 ):
-    """Generate a multi-page PDF of representative crop montages."""
+    """Generate a multi-page PDF of representative crop montages.
+
+    When ``save_individual_montages`` is True (default), each montage is
+    also saved as a separate PNG and SVG in a ``montage_singles/``
+    subfolder next to the PDF.
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     binary_matrix = np.asarray(binary_matrix, dtype=float)
     set_publication_style()
+
+    # Subfolder for individual montage exports (only when enabled)
+    singles_dir = None
+    if save_individual_montages:
+        singles_dir = output_path.parent / "montage_singles"
+        singles_dir.mkdir(parents=True, exist_ok=True)
 
     with PdfPages(str(output_path)) as pdf:
         for page_start in range(0, len(selections), montages_per_page):
@@ -842,8 +826,9 @@ def generate_representative_montage_pdf(
                 n_movie_frames = int(data["image_TZYXC"].shape[0])
                 snapshot_frames = auto_snapshot_frames(n_movie_frames, n_snapshots)
                 binary_row_index = int(selection["binary_row_index"])
+                traj_id = selection.get("trajectory_id", "trajectory")
                 title = (
-                    f'{selection.get("trajectory_id", "trajectory")} | '
+                    f'{traj_id} | '
                     f"{origin.lif_path.name} | scene {origin.series_index + 1} | "
                     f"particle {origin.particle_id}"
                 )
@@ -865,7 +850,7 @@ def generate_representative_montage_pdf(
                 if verbose:
                     print(
                         "    Montage:",
-                        selection.get("trajectory_id", "?"),
+                        traj_id,
                         f"origin={selection.get('origin_row_index', '?')}",
                         f"binary={binary_row_index}",
                         f"lif={origin.lif_path.name}",
@@ -877,9 +862,59 @@ def generate_representative_montage_pdf(
 
             pdf.savefig(fig, dpi=pdf_dpi)
             plt.close(fig)
+
+            # Save each montage as individual PNG + SVG
+            if save_individual_montages:
+                for slot, selection in enumerate(page):
+                    origin = selection["origin"]
+                    data = load_montage_data_cached(
+                        origin,
+                        apply_photobleaching=apply_photobleaching,
+                        photobleaching_mode=photobleaching_mode,
+                        verbose=False,
+                    )
+                    n_movie_frames = int(data["image_TZYXC"].shape[0])
+                    snapshot_frames = auto_snapshot_frames(n_movie_frames, n_snapshots)
+                    binary_row_index = int(selection["binary_row_index"])
+                    traj_id = selection.get("trajectory_id", "trajectory")
+                    title = (
+                        f'{traj_id} | '
+                        f"{origin.lif_path.name} | scene {origin.series_index + 1} | "
+                        f"particle {origin.particle_id}"
+                    )
+                    single_fig = plt.figure(
+                        figsize=panel_figsize if panel_figsize is not None else (18, 8),
+                        facecolor="white",
+                    )
+                    single_gs = single_fig.add_gridspec(1, 1)
+                    plot_cell_crop_timecourse_montage(
+                        image_TZYXC=data["image_TZYXC"],
+                        tracking_df=data["tracking_df"],
+                        particle_id=origin.particle_id,
+                        snapshot_frames=snapshot_frames,
+                        time_interval_seconds=origin.time_interval_seconds,
+                        binary_state=binary_matrix[binary_row_index, :],
+                        first_valid_frame=origin.first_valid_frame,
+                        fig=single_fig,
+                        subplot_spec=single_gs[0],
+                        title=title,
+                        **plot_kwargs,
+                    )
+                    safe_name = str(traj_id).replace("/", "_")
+                    single_fig.savefig(
+                        singles_dir / f"{safe_name}.png",
+                        dpi=pdf_dpi, bbox_inches="tight", facecolor="white",
+                    )
+                    single_fig.savefig(
+                        singles_dir / f"{safe_name}.svg",
+                        bbox_inches="tight", facecolor="white",
+                    )
+                    plt.close(single_fig)
+
             _clear_lif_cache()
 
     _clear_lif_cache()
     if verbose:
         print(f"    Saved representative montage PDF: {output_path}")
+        print(f"    Individual montages saved to: {singles_dir}")
     return output_path

@@ -1118,6 +1118,24 @@ def run_burst_quantification(
 
     if n_kept == 0:
         print("  WARNING: no trajectories passed QC")
+        # Still save params and QC table for debugging/provenance
+        if save_intermediates:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            zero_params = {
+                "condition": condition,
+                "time_interval_seconds": time_interval_seconds,
+                "n_trajectories_input": raw_matrix.shape[0],
+                "n_trajectories_kept": 0,
+                "threshold_mode": threshold_mode,
+                "threshold": threshold,
+                "timestamp": datetime.now().isoformat(),
+                "note": "No trajectories passed QC.",
+            }
+            with open(output_dir / "params.json", "w") as f:
+                json.dump(zero_params, f, indent=2)
+            qc_table.to_csv(output_dir / "qc_table.csv", index=False)
+            print(f"  Saved params.json and qc_table.csv to {output_dir}")
         return {
             "raw_matrix": raw_matrix, "processed_matrix": processed_matrix,
             "normalized_matrix": np.empty((0, 0)),
@@ -1146,6 +1164,12 @@ def run_burst_quantification(
     # otherwise threshold the normalized intensity matrix.
     if threshold_mode == "snr" and snr_kept is not None:
         thresholding_matrix = snr_kept
+    elif threshold_mode == "snr" and snr_kept is None:
+        raise ValueError(
+            "threshold_mode='snr' requires an snr_matrix, but none was "
+            "provided. Pass snr_matrix= to run_burst_quantification() or "
+            "switch to a different threshold_mode."
+        )
     else:
         thresholding_matrix = normalized_matrix
 
@@ -1383,6 +1407,41 @@ def _run_sanity_checks():
                      0.10 < r["trajectory_summary"]["fraction_time_on"].mean() < 0.45),
           threshold_mode="off_baseline_mad", threshold=4.0)
 
+    # 11. SNR mode: square pulse with matching SNR matrix → detects the pulse
+    snr_pulse_int = np.random.randn(5, n_time) * 2 + 10  # noisy background
+    snr_pulse_snr = np.full((5, n_time), 1.0)              # low SNR everywhere
+    snr_pulse_snr[:, 50:150] = 5.0                         # high SNR in pulse
+    _test("snr_square_pulse",
+          snr_pulse_int,
+          lambda r: (not r["trajectory_summary"].empty and
+                     r["trajectory_summary"]["n_bursts"].sum() >= 5 and
+                     r["trajectory_summary"]["fraction_time_on"].mean() < 0.8),
+          snr_matrix=snr_pulse_snr,
+          threshold_mode="snr", threshold=3.0)
+
+    # 12. SNR mode without snr_matrix → must raise ValueError
+    print("  ", end="")
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_burst_quantification(
+                input_matrix=np.random.rand(3, n_time),
+                output_dir=tmpdir,
+                time_interval_seconds=dt,
+                generate_plots=False,
+                save_intermediates=False,
+                threshold_mode="snr",
+                threshold=3.5,
+                # snr_matrix deliberately omitted
+            )
+        print("[FAIL] snr_missing_raises_error")
+        results.append(False)
+    except ValueError:
+        print("[PASS] snr_missing_raises_error")
+        results.append(True)
+    except Exception as e:
+        print(f"[FAIL] snr_missing_raises_error — wrong exception: {e}")
+        results.append(False)
+
     n_pass = sum(results)
     n_total = len(results)
     print(f"\n  Results: {n_pass}/{n_total} passed\n")
@@ -1403,7 +1462,9 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.05, help="Burst threshold")
     parser.add_argument("--threshold-mode", default="fraction_of_trace_max",
                         choices=["normalized_absolute", "fraction_of_trace_max",
-                                 "absolute_raw", "off_baseline_mad"])
+                                 "absolute_raw", "off_baseline_mad"],
+                        help="Threshold mode (snr mode is only available "
+                             "programmatically via run_burst_analysis.py)")
     parser.add_argument("--off-baseline-quantile", type=float, default=0.25,
                         help="OFF-pool quantile for off_baseline_mad mode (default 0.25)")
     parser.add_argument("--smooth-method", default="median",

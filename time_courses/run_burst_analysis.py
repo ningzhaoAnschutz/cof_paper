@@ -159,6 +159,7 @@ PLOT_PARAMS = dict(
     montage_montages_per_page=2,       # panels per PDF page
     montage_panel_figsize=(16, 6),     # (width, height_per_panel) in inches
     montage_pdf_dpi=200,
+    montage_save_individual=True,      # also export each montage as PNG+SVG
 )
 
 
@@ -592,7 +593,8 @@ def run_per_construct_analysis():
             print("  ⚠ No trajectories passed QC")
 
         # Generate all-traces PDF (10 traces per page, sequential order)
-        generate_pdf(output_dir)
+        if not ts.empty:
+            generate_pdf(output_dir)
 
         # ── Dual-channel kymograph (Green=Folding ch0, Magenta=Nascent ch1) ──
         # Use only QC-passed trajectories (same as montage/burst results)
@@ -712,46 +714,30 @@ def _select_representative_particles(trajectory_summary, origins, n=4):
     """Pick N representative trajectories for montage display.
 
     Selection strategy:
-        • If ``n`` is None, select ALL trajectories (sorted by burst count).
-        • Top  n//2  — highest burst count  (most active particles).
-        • Next n//2  — closest to the population-median fraction_time_on
-          (typical particles).  Ties broken by burst count.
+        • If ``n`` is None, select ALL trajectories sorted by trajectory
+          length (longest first, by ``n_valid_timepoints``).
+        • If ``n`` is an integer, select the top-N **longest** trajectories
+          (most valid timepoints), consistent with the density-sorted
+          kymograph convention.
     """
     if trajectory_summary.empty:
         return []
 
-    # n=None → all trajectories
+    sort_col = "n_valid_timepoints"
+    if sort_col not in trajectory_summary.columns:
+        # Fallback if column is missing (shouldn't happen in normal use)
+        sort_col = "n_bursts"
+
+    by_length = trajectory_summary.sort_values(
+        [sort_col, "fraction_time_on"], ascending=[False, False],
+    )
+
+    # n=None → all trajectories, longest first
     if n is None:
-        by_bursts = trajectory_summary.sort_values(
-            ["n_bursts", "fraction_time_on"], ascending=[False, False],
-        )
-        return [_build_selection(row, origins) for _, row in by_bursts.iterrows()]
+        return [_build_selection(row, origins) for _, row in by_length.iterrows()]
 
     n = min(int(n), len(trajectory_summary))
-
-    # ── Top half: most bursts ──
-    by_bursts = trajectory_summary.sort_values(
-        ["n_bursts", "fraction_time_on"],
-        ascending=[False, False],
-    )
-    n_top = max(1, n // 2)
-    top = by_bursts.head(n_top)
-
-    # ── Bottom half: closest to median fraction-ON ──
-    remaining = trajectory_summary.drop(index=top.index)
-    n_remaining = n - len(top)
-    if n_remaining > 0 and not remaining.empty:
-        median_fraction_on = trajectory_summary["fraction_time_on"].median()
-        mid = (
-            remaining.assign(
-                dist=(remaining["fraction_time_on"] - median_fraction_on).abs()
-            )
-            .sort_values(["dist", "n_bursts"], ascending=[True, False])
-            .head(n_remaining)
-        )
-        selected = pd.concat([top, mid])
-    else:
-        selected = top
+    selected = by_length.head(n)
 
     return [_build_selection(row, origins) for _, row in selected.iterrows()]
 
@@ -862,7 +848,7 @@ def generate_representative_montages(all_results):
             print(f"  {short}: no selections — skipping montage PDF")
             continue
 
-        output_path = entry["output_dir"] / "plots" / "representative_montages.pdf"
+        output_path = entry["output_dir"] / "plots" / f"montages_{short}.pdf"
         print(
             f"\n  {short}: {len(selections)} representative particles "
             f"→ {output_path.name}"
@@ -884,6 +870,7 @@ def generate_representative_montages(all_results):
                 n_snapshots=n_snapshots,
                 panel_figsize=panel_figsize,
                 pdf_dpi=pdf_dpi,
+                save_individual_montages=PLOT_PARAMS.get("montage_save_individual", True),
                 verbose=True,
                 # Visual kwargs forwarded to plot_cell_crop_timecourse_montage
                 crop_size_px=crop_size_px,

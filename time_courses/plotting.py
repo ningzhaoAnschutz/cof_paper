@@ -6,7 +6,7 @@ from pathlib import Path
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import LinearSegmentedColormap
+
 from scipy.stats import mannwhitneyu
 
 
@@ -17,14 +17,13 @@ DEFAULT_DPI = 300
 CHANNEL_GREEN = (0.0, 1.0, 0.0)
 CHANNEL_MAGENTA = (1.0, 0.0, 1.0)
 CHANNEL_BLACK = (0.0, 0.0, 0.0)
-CHANNEL_RED = (1.0, 0.0, 0.0)
+
 
 TRACE_MAGENTA = "#d600d6"
 TRACE_GREEN = "#00a651"
 TRACE_BLUE = "#2b7bba"
 TRACE_GRAY = "#4d4d4d"
-TRACE_ORANGE = "#e6550d"
-TRACE_RED = "#d62728"
+
 
 
 def set_publication_style() -> None:
@@ -94,11 +93,7 @@ def style_legend(legend) -> None:
     frame.set_alpha(1.0)
 
 
-def channel_cmap(name: str, color=CHANNEL_MAGENTA):
-    """Return a black-to-channel-color colormap for single-channel kymographs."""
-    cmap = LinearSegmentedColormap.from_list(name, [CHANNEL_BLACK, color], N=256)
-    cmap.set_bad(CHANNEL_BLACK)
-    return cmap
+
 
 
 def save_figure(fig, path, dpi: int = DEFAULT_DPI) -> None:
