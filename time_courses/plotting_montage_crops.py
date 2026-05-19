@@ -28,6 +28,7 @@ from microlive import microscopy as mi
 from plotting import (
     CHANNEL_GREEN,
     CHANNEL_MAGENTA,
+    TRACE_BLUE,
     TRACE_GREEN,
     TRACE_MAGENTA,
     set_publication_style,
@@ -516,6 +517,7 @@ def plot_cell_crop_timecourse_montage(
     subplot_spec=None,
     panel_label: str | None = None,
     title: str | None = None,
+    trim_to_valid: bool = True,
 ):
     """Plot a trace, ON/OFF bar, and max-Z crop montage for one particle.
 
@@ -535,6 +537,12 @@ def plot_cell_crop_timecourse_montage(
         colormap) instead of the legacy per-channel RGB tinting.  This
         greatly improves spot-to-background contrast.  Default ``None``
         (legacy RGB).
+    trim_to_valid : bool, optional
+        When True (default), trim the plot to only the frame range that
+        contains actual tracking data.  Leading/trailing NaN regions are
+        removed so the time axis starts at 0 and ends at the last valid
+        data point.  Snapshot frames are recomputed within the valid
+        range.  Set to False to plot the full movie duration.
     """
     # ── Publication-quality defaults: Arial, black text, thick ticks ──
 
@@ -551,7 +559,7 @@ def plot_cell_crop_timecourse_montage(
     _TICK_W = 1.4     # tick mark thickness
     _TICK_LEN = 6     # tick length (pt)
     _TRACE_LW = 2.4   # intensity trace linewidth
-    _STEP_LW = 1.6    # ON/OFF step linewidth
+    _STEP_LW = 2.5    # ON/OFF step linewidth
 
     image_TZYXC = np.asarray(image_TZYXC)
     channels = [dict(ch) for ch in (channels or DEFAULT_CHANNELS)]
@@ -567,9 +575,37 @@ def plot_cell_crop_timecourse_montage(
     _validate_inputs(image_TZYXC, tracking_df, particle_id, channels)
     particle_df = tracking_df[tracking_df["particle"] == particle_id]
     dt = float(time_interval_seconds)
-    t_min = np.arange(n_frames) * dt / 60.0
-    x_max = max((n_frames - 1) * dt / 60.0, 0.1)
-    n_cols = len(snapshot_frames)
+
+    # ── Optional trim to valid data range ──
+    # Determine the first and last movie frame containing actual data for
+    # this particle.  When trim_to_valid is True, all plot vectors (traces,
+    # binary state, crop snapshots, time labels) are shifted so the plot
+    # starts at t = 0 and ends at the last frame with data.
+    trim_start = 0
+    trim_end = n_frames - 1
+    if trim_to_valid and not particle_df.empty and "frame" in particle_df.columns:
+        valid_frames = particle_df["frame"].dropna().astype(int)
+        if len(valid_frames) > 0:
+            trim_start = int(valid_frames.min())
+            trim_end = int(valid_frames.max())
+    trimmed_n = trim_end - trim_start + 1
+
+    # Recompute snapshot frames within the valid range
+    n_snapshots_requested = len(snapshot_frames)
+    snapshot_frames_movie = [
+        int(f) + trim_start
+        for f in auto_snapshot_frames(trimmed_n, n_snapshots_requested)
+    ]
+    # Clamp to valid movie bounds
+    snapshot_frames_movie = [
+        f for f in snapshot_frames_movie if 0 <= f < n_frames
+    ]
+    if not snapshot_frames_movie:
+        snapshot_frames_movie = [trim_start]
+
+    t_min = np.arange(trimmed_n) * dt / 60.0
+    x_max = max((trimmed_n - 1) * dt / 60.0, 0.1)
+    n_cols = len(snapshot_frames_movie)
     n_channel_rows = len(channels)
     use_cmap = crop_colormap is not None
     add_merge = bool(show_merge and len(channels) == 2 and not use_cmap)
@@ -624,14 +660,23 @@ def plot_cell_crop_timecourse_montage(
         trace = _normalize_trace(trace, trace_norm_mode)
         if trace_scale is not None and trace_scale != 0:
             trace = trace / float(trace_scale)
-        # Fill NaN gaps with linear interpolation for a continuous plot
+        # Trim to valid range
+        trace = trace[trim_start:trim_end + 1]
+        # Fill internal NaN gaps with linear interpolation for a continuous
+        # plot line.  Edge NaNs (before first / after last valid frame) are
+        # left as NaN so the trace starts and stops at true data boundaries.
         finite_mask = np.isfinite(trace)
         if finite_mask.any() and not finite_mask.all():
-            trace = np.interp(
-                np.arange(len(trace)),
-                np.where(finite_mask)[0],
-                trace[finite_mask],
-            )
+            valid_idx = np.where(finite_mask)[0]
+            first, last = valid_idx[0], valid_idx[-1]
+            interior = slice(first, last + 1)
+            inner_mask = finite_mask[interior]
+            if not inner_mask.all():
+                trace[interior] = np.interp(
+                    np.arange(interior.start, interior.stop),
+                    np.where(finite_mask)[0],
+                    trace[finite_mask],
+                )
         ax_trace.plot(t_min, trace, color=ch["trace_color"], lw=_TRACE_LW, label=ch["label"])
 
 
@@ -658,22 +703,24 @@ def plot_cell_crop_timecourse_montage(
 
     # ── ON/OFF state bar ──
     if binary_state is None:
-        state = np.ones(n_frames, dtype=float)
+        state = np.ones(trimmed_n, dtype=float)
         t_state = t_min
     else:
         binary_state = np.asarray(binary_state, dtype=float)
-        start = max(0, int(first_valid_frame))
-        valid_len = max(0, min(binary_state.size, n_frames - start))
-        state = binary_state[:valid_len]
-        t_state = (np.arange(valid_len) + start) * dt / 60.0
-    # Fill NaN gaps with nearest neighbour (forward then backward)
+        # binary_state is aligned to frame 0 of the full movie.
+        # Slice to the trimmed range.
+        bs_start = max(0, trim_start)
+        bs_end = min(binary_state.size, trim_end + 1)
+        state = binary_state[bs_start:bs_end]
+        t_state = np.arange(len(state)) * dt / 60.0
+    # Fill internal NaN gaps with nearest neighbour
     nan_mask = np.isnan(state)
     if nan_mask.any() and not nan_mask.all():
         s = pd.Series(state)
         state = s.ffill().bfill().to_numpy()
     if t_state.size:
-        ax_state.step(t_state, state, where="post", color="black", linewidth=_STEP_LW)
-    ax_state.set_ylim(-0.1, 1.1)
+        ax_state.step(t_state, state, where="post", color=TRACE_BLUE, linewidth=_STEP_LW)
+    ax_state.set_ylim(-0.25, 1.35)
     ax_state.set_yticks([0, 1])
     ax_state.set_yticklabels(["OFF", "ON"], fontsize=11, color="black")
     ax_state.set_xlim(0, x_max)
@@ -690,7 +737,7 @@ def plot_cell_crop_timecourse_montage(
     for ch in channels:
         ch_idx = int(ch["index"])
         snapshot_crops = []
-        for frame in snapshot_frames:
+        for frame in snapshot_frames_movie:
             coord = _get_coordinate(
                 particle_df,
                 frame,
@@ -730,7 +777,7 @@ def plot_cell_crop_timecourse_montage(
     for row_idx, ch in enumerate(channels):
         row_axes = []
         rgb_row = []
-        for col_idx, frame in enumerate(snapshot_frames):
+        for col_idx, frame in enumerate(snapshot_frames_movie):
             ax = fig.add_subplot(crop_gs[row_idx, col_idx])
             norm_crop = normalized_by_channel[row_idx][col_idx]
             if use_cmap:
@@ -742,7 +789,8 @@ def plot_cell_crop_timecourse_montage(
                 ax.imshow(rgb, interpolation="nearest", aspect="auto")
             ax.set_axis_off()
             if row_idx == 0 and show_crop_time_labels:
-                t_label_min = frame * dt / 60.0
+                # Time label relative to trimmed axis (not original movie)
+                t_label_min = (frame - trim_start) * dt / 60.0
                 ax.set_title(f"{t_label_min:.1f}", fontsize=7, pad=2, color="black")
             if col_idx == 0:
                 ax.text(
@@ -756,7 +804,7 @@ def plot_cell_crop_timecourse_montage(
     if add_merge:
         row_axes = []
         merge_idx = len(channels)
-        for col_idx, frame in enumerate(snapshot_frames):
+        for col_idx, frame in enumerate(snapshot_frames_movie):
             ax = fig.add_subplot(crop_gs[merge_idx, col_idx])
             rgb = np.clip(rgb_rows[0][col_idx] + rgb_rows[1][col_idx], 0, 1)
             ax.imshow(rgb, interpolation="nearest", aspect="auto")

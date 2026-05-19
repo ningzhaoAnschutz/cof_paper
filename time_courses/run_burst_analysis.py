@@ -93,14 +93,14 @@ PARAMS = dict(
     # ── Loader: SNR filter ──
     # SNR is checked on the tracking channel (ch1) so QC reflects
     # localization quality, not folding-signal brightness.
-    min_snr=3,
+    min_snr=1,
     snr_channel_index=1,           # None → filter on the loaded channel
-    # ── Loader: shift_trajectories ──
+    # ── Loader: shift_trajectories (stage 1 filter) ──
     shift_min_data_fraction=0.4,   # min fraction of finite frames to keep
-    shift_max_missing_frames=3,    # max total internal NaN frames
-    # ── Burst module: QC ──
+    shift_max_missing_frames=3,    # max TOTAL internal NaN frames allowed
+    # ── Burst module: QC (stage 2 filter — runs after loader) ──
     min_valid_fraction=0.50,
-    max_internal_nan_gap=2,
+    max_internal_nan_gap=2,        # max CONSECUTIVE NaN gap (stricter than total)
     align_first_valid=True,
     # ── Burst module: smoothing ──
     detrend_method=None,
@@ -115,7 +115,7 @@ PARAMS = dict(
     # are ON.  SNR is self-normalised by local noise, so the same cutoff
     # works across constructs with different absolute brightness.
     threshold_mode="snr",
-    threshold=3.5,                     # SNR cutoff (standard microscopy detection)
+    threshold=3.0,                     # SNR cutoff (standard microscopy detection)
     off_baseline_quantile=0.5,        # unused in snr mode, kept for reference
     # ── Burst module: event cleanup ──
     min_event_duration_frames=3,
@@ -137,11 +137,11 @@ PARAMS = dict(
     montage_crop_norm_mode="per_crop_percentile",  # high-contrast per-crop stretch
     montage_crop_colormap="gray",      # "gray" for grayscale; None for legacy RGB
     montage_trace_norm_mode="raw",     # "raw" | "min_max" | "total_intensity"
-    montage_smooth_window=1,           # 1 = no smoothing on traces
     # Vertical layout: [trace, on_off_bar, crop_montage] as proportions.
     # e.g. [0.60, 0.15, 0.25] = 60 % trace, 15 % state bar, 25 % crops.
     montage_section_height_ratios=[0.72, 0.1, 0.18],
-    montage_show_crop_time_labels=False,  # False to hide time text above crops
+    montage_show_crop_time_labels=True,  # False to hide time text above crops
+    montage_trim_to_valid=True,        # trim plot to valid data range
 )
 
 # Plot parameters (kept separate — these don't affect scientific results)
@@ -157,7 +157,7 @@ PLOT_PARAMS = dict(
     plot_dpi=300,
     # ── Montage PDF layout ──
     montage_panels_per_page=2,         # panels per PDF page
-    montage_panel_figsize=(16, 6),     # (width, height_per_panel) in inches
+    montage_panel_figsize=(16, 5.75),     # (width, height_per_panel) in inches
     montage_pdf_dpi=200,
     montage_save_individual_montages=True,  # also export each montage as PNG+SVG
 )
@@ -818,9 +818,10 @@ def generate_representative_montages(all_results):
     crop_norm_mode      = PARAMS["montage_crop_norm_mode"]
     crop_colormap       = PARAMS.get("montage_crop_colormap", None)
     trace_norm_mode     = PARAMS["montage_trace_norm_mode"]
-    smooth_window       = PARAMS["montage_smooth_window"]
+    smooth_window       = PARAMS["smooth_window"]
     height_ratios       = PARAMS["montage_section_height_ratios"]
     show_crop_time_labels = PARAMS.get("montage_show_crop_time_labels", True)
+    trim_to_valid       = PARAMS.get("montage_trim_to_valid", True)
     montages_per_page   = PLOT_PARAMS["montage_panels_per_page"]
     panel_figsize       = PLOT_PARAMS.get("montage_panel_figsize", None)
     pdf_dpi             = PLOT_PARAMS.get("montage_pdf_dpi", 200)
@@ -883,6 +884,7 @@ def generate_representative_montages(all_results):
                 smooth_window=smooth_window,
                 section_height_ratios=height_ratios,
                 show_crop_time_labels=show_crop_time_labels,
+                trim_to_valid=trim_to_valid,
             )
         except Exception as e:
             print(
