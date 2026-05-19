@@ -116,9 +116,6 @@ def resolve_lif_path(raw_path, data_root, construct_name) -> Path:
     raise FileNotFoundError(f"Cannot resolve LIF path from metadata: {raw_path}")
 
 
-
-
-
 def auto_snapshot_frames(n_frames: int, n_snapshots: int = 10) -> list[int]:
     """Return evenly spaced frame indices across the original movie duration."""
     n_frames = int(n_frames)
@@ -842,7 +839,6 @@ def generate_representative_montage_pdf(
                     first_valid_frame=origin.first_valid_frame,
                     fig=fig,
                     subplot_spec=page_gs[slot],
-                    show=False,
                     title=title,
                     **plot_kwargs,
                 )

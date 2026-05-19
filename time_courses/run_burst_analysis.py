@@ -156,10 +156,10 @@ PLOT_PARAMS = dict(
     comparison_figsize=(5.2, 4.5),
     plot_dpi=300,
     # ── Montage PDF layout ──
-    montage_montages_per_page=2,       # panels per PDF page
+    montage_panels_per_page=2,         # panels per PDF page
     montage_panel_figsize=(16, 6),     # (width, height_per_panel) in inches
     montage_pdf_dpi=200,
-    montage_save_individual=True,      # also export each montage as PNG+SVG
+    montage_save_individual_montages=True,  # also export each montage as PNG+SVG
 )
 
 
@@ -821,7 +821,7 @@ def generate_representative_montages(all_results):
     smooth_window       = PARAMS["montage_smooth_window"]
     height_ratios       = PARAMS["montage_section_height_ratios"]
     show_crop_time_labels = PARAMS.get("montage_show_crop_time_labels", True)
-    montages_per_page   = PLOT_PARAMS["montage_montages_per_page"]
+    montages_per_page   = PLOT_PARAMS["montage_panels_per_page"]
     panel_figsize       = PLOT_PARAMS.get("montage_panel_figsize", None)
     pdf_dpi             = PLOT_PARAMS.get("montage_pdf_dpi", 200)
 
@@ -870,7 +870,7 @@ def generate_representative_montages(all_results):
                 n_snapshots=n_snapshots,
                 panel_figsize=panel_figsize,
                 pdf_dpi=pdf_dpi,
-                save_individual_montages=PLOT_PARAMS.get("montage_save_individual", True),
+                save_individual_montages=PLOT_PARAMS.get("montage_save_individual_montages", True),
                 verbose=True,
                 # Visual kwargs forwarded to plot_cell_crop_timecourse_montage
                 crop_size_px=crop_size_px,

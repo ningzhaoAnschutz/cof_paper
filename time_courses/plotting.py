@@ -24,8 +24,6 @@ TRACE_GREEN = "#00a651"
 TRACE_BLUE = "#2b7bba"
 TRACE_GRAY = "#4d4d4d"
 
-
-
 def set_publication_style() -> None:
     """Use the white/Arial/black-axis style from the reference notebooks."""
     mpl.rcParams.update(
@@ -91,10 +89,6 @@ def style_legend(legend) -> None:
     frame.set_edgecolor("black")
     frame.set_linewidth(1.2)
     frame.set_alpha(1.0)
-
-
-
-
 
 def save_figure(fig, path, dpi: int = DEFAULT_DPI) -> None:
     """Save a figure in PNG and SVG formats with publication-friendly defaults."""
