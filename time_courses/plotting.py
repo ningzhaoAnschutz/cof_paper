@@ -90,6 +90,7 @@ def style_legend(legend) -> None:
     frame.set_linewidth(1.2)
     frame.set_alpha(1.0)
 
+
 def save_figure(fig, path, dpi: int = DEFAULT_DPI) -> None:
     """Save a figure in PNG and SVG formats with publication-friendly defaults."""
     path = Path(path)
@@ -114,8 +115,29 @@ def _p_to_stars(p_value: float) -> str:
     return "ns"
 
 
-def pairwise_mannwhitney_stats(data, labels) -> list[dict]:
-    """Compute all pairwise two-sided Mann-Whitney U tests."""
+def _benjamini_hochberg(p_values):
+    """Benjamini-Hochberg FDR correction. NaN-safe, no external deps."""
+    p = np.asarray(p_values, dtype=float)
+    n = len(p)
+    adjusted = np.full(n, np.nan)
+    finite_mask = np.isfinite(p)
+    if not np.any(finite_mask):
+        return adjusted
+    idx = np.where(finite_mask)[0]
+    pf = p[idx]
+    m = len(pf)
+    order = np.argsort(pf)
+    ranked = np.empty(m)
+    ranked[order] = np.arange(1, m + 1)
+    adj = pf * m / ranked
+    # Enforce monotonicity (step-up)
+    adj[order] = np.minimum.accumulate(adj[order[::-1]])[::-1]
+    adjusted[idx] = np.clip(adj, 0, 1)
+    return adjusted
+
+
+def pairwise_mannwhitney_stats(data, labels, use_bh_fdr: bool = True) -> list[dict]:
+    """Compute all pairwise two-sided Mann-Whitney U tests with optional BH-FDR correction."""
     clean_data = []
     clean_labels = []
     for vals, label in zip(data, labels):
@@ -150,9 +172,19 @@ def pairwise_mannwhitney_stats(data, labels) -> list[dict]:
                     "mean_2": float(np.mean(group_b)),
                     "mannwhitney_u": u_stat,
                     "p_value": p_value,
-                    "significance": _p_to_stars(p_value),
                 }
             )
+
+    # Apply Benjamini-Hochberg FDR correction
+    p_vals = [s["p_value"] for s in stats]
+    p_adj = _benjamini_hochberg(p_vals)
+    for s, pa in zip(stats, p_adj):
+        s["p_adjusted_bh"] = float(pa) if np.isfinite(pa) else np.nan
+        if use_bh_fdr:
+            s["significance"] = _p_to_stars(pa)
+        else:
+            s["significance"] = _p_to_stars(s["p_value"])
+
     return stats
 
 
@@ -164,11 +196,13 @@ def box_with_points(
     ylabel: str,
     title: str = "",
     ylim=None,
+    xlabels: list[str] | None = None,
     max_points_per_group: int = 800,
     seed: int = 7,
     show_stats: bool = False,
     only_significant: bool = True,
     max_percentile_significance: float = 99.5,
+    use_bh_fdr: bool = True,
 ) -> list[dict]:
     """Draw Fig-3-like white box/whisker plots with black jittered points."""
     clean_data = []
@@ -216,17 +250,20 @@ def box_with_points(
         )
 
     ax.set_xticks(np.arange(1, len(clean_labels) + 1))
-    ax.set_xticklabels(
-        [f"{label}\nn={len(vals)}" for label, vals in zip(clean_labels, clean_data)],
-        fontname=FONT_FAMILY,
-    )
+    if xlabels is not None:
+        ax.set_xticklabels(xlabels, fontname=FONT_FAMILY)
+    else:
+        ax.set_xticklabels(
+            [f"{label}\nn={len(vals)}" for label, vals in zip(clean_labels, clean_data)],
+            fontname=FONT_FAMILY,
+        )
     ax.set_ylabel(ylabel, fontname=FONT_FAMILY)
     ax.set_title(title, fontname=FONT_FAMILY)
     if ylim is not None and not show_stats:
         ax.set_ylim(ylim)
     style_axes(ax, grid=False)
 
-    stats = pairwise_mannwhitney_stats(clean_data, clean_labels)
+    stats = pairwise_mannwhitney_stats(clean_data, clean_labels, use_bh_fdr=use_bh_fdr)
     if show_stats and len(clean_data) > 1:
         visible_stats = [
             row for row in stats

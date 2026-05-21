@@ -117,16 +117,34 @@ def resolve_lif_path(raw_path, data_root, construct_name) -> Path:
     raise FileNotFoundError(f"Cannot resolve LIF path from metadata: {raw_path}")
 
 
-def auto_snapshot_frames(n_frames: int, n_snapshots: int = 10) -> list[int]:
-    """Return evenly spaced frame indices across the original movie duration."""
+def auto_snapshot_frames(
+    n_frames: int,
+    n_snapshots: int = 10,
+    time_interval_seconds: float = 5.0,
+) -> list[int]:
+    """Return evenly spaced frame indices across the movie duration.
+
+    Parameters
+    ----------
+    n_frames : int
+        Total number of frames in the movie.
+    n_snapshots : int
+        Desired number of evenly spaced snapshots.  Capped at *n_frames*.
+    time_interval_seconds : float
+        Retained for API compatibility; not used internally.
+    """
     n_frames = int(n_frames)
     n_snapshots = int(n_snapshots)
     if n_frames <= 0:
         return []
     if n_snapshots <= 1:
         return [0]
-    frames = np.linspace(0, n_frames - 1, min(n_snapshots, n_frames))
-    return sorted({int(round(f)) for f in frames})
+
+    # Cap so we never request more snapshots than available frames
+    n_req = min(n_snapshots, n_frames)
+    frames = np.linspace(0, n_frames - 1, n_req)
+    unique_frames = sorted({int(round(f)) for f in frames})
+    return unique_frames
 
 
 def _clear_lif_cache() -> None:
@@ -139,6 +157,7 @@ def load_montage_data_cached(
     *,
     apply_photobleaching: bool = False,
     photobleaching_mode: str = "entire_image",
+    max_frames: int | None = None,
     verbose: bool = True,
 ) -> dict:
     """Load one origin's scene/data with a tiny LRU cache."""
@@ -149,6 +168,7 @@ def load_montage_data_cached(
         bool(apply_photobleaching),
         photobleaching_mode,
         float(origin.time_interval_seconds),
+        max_frames,
     )
     if key in _LIF_CACHE:
         _LIF_CACHE.move_to_end(key)
@@ -161,6 +181,7 @@ def load_montage_data_cached(
         apply_photobleaching=apply_photobleaching,
         photobleaching_mode=photobleaching_mode,
         time_interval_seconds=origin.time_interval_seconds,
+        max_frames=max_frames,
         verbose=verbose,
     )
     _LIF_CACHE[key] = data
@@ -178,6 +199,7 @@ def load_montage_data(
     apply_photobleaching: bool = False,
     photobleaching_mode: str = "entire_image",
     time_interval_seconds: float | None = None,
+    max_frames: int | None = None,
     verbose: bool = True,
 ) -> dict:
     """Load the original image scene, tracking CSV, and mask for one FOV."""
@@ -204,6 +226,10 @@ def load_montage_data(
         )
     image_TZYXC = reader.read_scene(int(series_index))
 
+    # Truncate to max_frames BEFORE photobleaching correction
+    if max_frames is not None and max_frames > 0:
+        image_TZYXC = image_TZYXC[:max_frames]
+
     pixel_size_xy_um = abs(reader._aics.physical_pixel_sizes.Y or 0) or np.nan
     series_name = scenes[int(series_index)]
 
@@ -222,6 +248,10 @@ def load_montage_data(
     if not csv_files:
         raise FileNotFoundError(f"No tracking_*.csv in {results_folder}")
     tracking_df = pd.read_csv(csv_files[0])
+
+    # Truncate tracking data to max_frames
+    if max_frames is not None and max_frames > 0 and "frame" in tracking_df.columns:
+        tracking_df = tracking_df[tracking_df["frame"] < max_frames].copy()
 
     mask_files = sorted(results_folder.glob("mask_*.tif"))
     mask_YX = None
@@ -257,6 +287,7 @@ def load_montage_data(
         "photobleaching_applied": bool(apply_photobleaching),
         "decay_rates": decay_rates,
         "photobleaching_data": pb_data,
+        "projection_cache": {},
     }
 
 
@@ -368,6 +399,33 @@ def _coerce_gaussian_filter_value(value) -> float:
     return sigma
 
 
+def _projection_cache_image_key(image_TZYXC) -> tuple:
+    """Namespace projection-cache entries to one in-memory image stack."""
+    arr = np.asarray(image_TZYXC)
+    return id(arr), tuple(arr.shape)
+
+
+def _resolve_averaged_frames(selected_frame: int, n_total_frames: int) -> list[int]:
+    """Return 3 frame indices for temporal averaging with edge clamping.
+
+    Normal case:  [selected_frame-1, selected_frame, selected_frame+1]
+    First frame (0):  [0, 1, 2]
+    Last frame (N-1): [N-3, N-2, N-1]
+    Second-to-last (N-2): [N-3, N-2, N-1]
+    """
+    n = int(n_total_frames)
+    f = int(selected_frame)
+    if n <= 3:
+        return list(range(n))
+    if f <= 0:
+        return [0, 1, 2]
+    if f >= n - 1:
+        return [n - 3, n - 2, n - 1]
+    if f >= n - 2:
+        return [n - 3, n - 2, n - 1]
+    return [f - 1, f, f + 1]
+
+
 def _full_frame_max_projection(
     image_TZYXC,
     frame: int,
@@ -384,7 +442,7 @@ def _full_frame_max_projection(
         raise IndexError(f"Channel {channel} out of range for {image_TZYXC.shape[-1]} channels")
 
     sigma = _coerce_gaussian_filter_value(gaussian_filter_value)
-    key = (int(frame), int(channel), sigma)
+    key = ("raw", _projection_cache_image_key(image_TZYXC), int(frame), int(channel), sigma)
     if projection_cache is not None and key in projection_cache:
         return projection_cache[key]
 
@@ -397,6 +455,46 @@ def _full_frame_max_projection(
     if projection_cache is not None:
         projection_cache[key] = projection
     return projection
+
+
+def _full_frame_max_projection_averaged(
+    image_TZYXC,
+    selected_frame: int,
+    channel: int,
+    gaussian_filter_value: float = 0,
+    projection_cache: dict | None = None,
+):
+    """Return a temporally averaged max-Z projection over 3 frames.
+
+    Averages ``selected_frame-1``, ``selected_frame``, and ``selected_frame+1``
+    with edge clamping via :func:`_resolve_averaged_frames`.
+    """
+    image_TZYXC = np.asarray(image_TZYXC)
+    n_frames = image_TZYXC.shape[0]
+    avg_frames = _resolve_averaged_frames(selected_frame, n_frames)
+
+    sigma = _coerce_gaussian_filter_value(gaussian_filter_value)
+    key = ("avg3", _projection_cache_image_key(image_TZYXC), int(selected_frame), int(channel), sigma)
+    if projection_cache is not None and key in projection_cache:
+        return projection_cache[key]
+
+    projections = []
+    for f in avg_frames:
+        proj = _full_frame_max_projection(
+            image_TZYXC,
+            int(f),
+            channel,
+            gaussian_filter_value=0,
+            projection_cache=projection_cache,
+        )
+        projections.append(np.asarray(proj, dtype=float))
+    averaged = np.mean(projections, axis=0)
+    if sigma > 0:
+        averaged = gaussian_filter(averaged, sigma=sigma, mode="nearest")
+
+    if projection_cache is not None:
+        projection_cache[key] = averaged
+    return averaged
 
 
 def _crop_from_projection(projection_YX, y: float, x: float, crop_size_px: int):
@@ -428,15 +526,30 @@ def _extract_crop(
     image_TZYXC, frame: int, y: float, x: float, channel: int,
     crop_size_px: int, gaussian_filter_value: float = 0,
     projection_cache: dict | None = None,
+    average_3_frames: bool = False,
 ):
-    """Extract a crop from the full max-Z frame after optional Gaussian filtering."""
-    projection = _full_frame_max_projection(
-        image_TZYXC,
-        frame,
-        channel,
-        gaussian_filter_value=gaussian_filter_value,
-        projection_cache=projection_cache,
-    )
+    """Extract a crop from the full max-Z frame after optional Gaussian filtering.
+
+    When ``average_3_frames`` is True, the crop is extracted from a temporally
+    averaged max-Z projection of 3 neighbouring frames (see
+    :func:`_full_frame_max_projection_averaged`).
+    """
+    if average_3_frames:
+        projection = _full_frame_max_projection_averaged(
+            image_TZYXC,
+            frame,
+            channel,
+            gaussian_filter_value=gaussian_filter_value,
+            projection_cache=projection_cache,
+        )
+    else:
+        projection = _full_frame_max_projection(
+            image_TZYXC,
+            frame,
+            channel,
+            gaussian_filter_value=gaussian_filter_value,
+            projection_cache=projection_cache,
+        )
     return _crop_from_projection(projection, y, x, crop_size_px)
 
 
@@ -513,6 +626,8 @@ def plot_cell_crop_timecourse_montage(
     crop_colormap: str | None = None,
     section_height_ratios: list | tuple | None = None,
     show_crop_time_labels: bool = True,
+    display_3_crops_averaged: bool = False,
+    projection_cache: dict | None = None,
     fig=None,
     subplot_spec=None,
     panel_label: str | None = None,
@@ -537,6 +652,17 @@ def plot_cell_crop_timecourse_montage(
         colormap) instead of the legacy per-channel RGB tinting.  This
         greatly improves spot-to-background contrast.  Default ``None``
         (legacy RGB).
+    display_3_crops_averaged : bool, optional
+        When True, each crop is extracted from a temporally averaged
+        max-Z projection spanning 3 frames: ``selected_frame-1``,
+        ``selected_frame``, and ``selected_frame+1``.  Edge handling:
+        frame 0 → averages [0, 1, 2]; last frame N-1 → averages
+        [N-3, N-2, N-1].  This also applies to the merged channel
+        row.  Default ``False``.
+    projection_cache : dict, optional
+        Shared cache for expensive full-frame max projections and Gaussian
+        filters.  Pass the same dict for multiple particles from the same FOV
+        to avoid recomputing identical frame/channel projections.
     trim_to_valid : bool, optional
         When True (default), trim the plot to only the frame range that
         contains actual tracking data.  Leading/trailing NaN regions are
@@ -575,6 +701,8 @@ def plot_cell_crop_timecourse_montage(
     _validate_inputs(image_TZYXC, tracking_df, particle_id, channels)
     particle_df = tracking_df[tracking_df["particle"] == particle_id]
     dt = float(time_interval_seconds)
+    if projection_cache is None:
+        projection_cache = {}
 
     # ── Optional trim to valid data range ──
     # Determine the first and last movie frame containing actual data for
@@ -594,7 +722,7 @@ def plot_cell_crop_timecourse_montage(
     n_snapshots_requested = len(snapshot_frames)
     snapshot_frames_movie = [
         int(f) + trim_start
-        for f in auto_snapshot_frames(trimmed_n, n_snapshots_requested)
+        for f in auto_snapshot_frames(trimmed_n, n_snapshots_requested, dt)
     ]
     # Clamp to valid movie bounds
     snapshot_frames_movie = [
@@ -608,7 +736,7 @@ def plot_cell_crop_timecourse_montage(
     n_cols = len(snapshot_frames_movie)
     n_channel_rows = len(channels)
     use_cmap = crop_colormap is not None
-    add_merge = bool(show_merge and len(channels) == 2 and not use_cmap)
+    add_merge = bool(show_merge and len(channels) == 2)
     n_crop_rows = n_channel_rows + (1 if add_merge else 0)
 
     # Section layout — 3 vertical sections [trace+state, (unused), crops]
@@ -650,8 +778,11 @@ def plot_cell_crop_timecourse_montage(
     ax_trace = fig.add_subplot(upper_gs[0])
     ax_state = fig.add_subplot(upper_gs[1], sharex=ax_trace)
 
+    # Crop gridspec — tight horizontal packing so square crops sit close.
+    # wspace=0 eliminates padding between columns; the small crop pixels
+    # plus the imshow aspect="equal" will keep squares centred.
     crop_gs = gridspec.GridSpecFromSubplotSpec(
-        n_crop_rows, n_cols, subplot_spec=outer_gs[1], wspace=0.01, hspace=0.0
+        n_crop_rows, n_cols, subplot_spec=outer_gs[1], wspace=0.0, hspace=0.0
     )
 
     # ── Intensity traces ──
@@ -707,10 +838,13 @@ def plot_cell_crop_timecourse_montage(
         t_state = t_min
     else:
         binary_state = np.asarray(binary_state, dtype=float)
-        # binary_state is aligned to frame 0 of the full movie.
-        # Slice to the trimmed range.
-        bs_start = max(0, trim_start)
-        bs_end = min(binary_state.size, trim_end + 1)
+        # binary_state is aligned to the *preprocessed* matrix, which may
+        # have been left-shifted by align_first_valid.  In that case,
+        # binary frame 0 corresponds to movie frame ``first_valid_frame``.
+        # Convert the movie-coordinate trim range to binary-vector indices.
+        align_offset = first_valid_frame  # 0 when no alignment was applied
+        bs_start = max(0, trim_start - align_offset)
+        bs_end = min(binary_state.size, trim_end - align_offset + 1)
         state = binary_state[bs_start:bs_end]
         t_state = np.arange(len(state)) * dt / 60.0
     # Fill internal NaN gaps with nearest neighbour
@@ -724,6 +858,8 @@ def plot_cell_crop_timecourse_montage(
     ax_state.set_yticks([0, 1])
     ax_state.set_yticklabels(["OFF", "ON"], fontsize=11, color="black")
     ax_state.set_xlim(0, x_max)
+    # Explicit 1-minute resolution ticks: 0, 1, 2, …, floor(x_max)
+    ax_state.set_xticks(np.arange(0, int(x_max) + 1, 1))
     ax_state.set_xlabel("Time (min)", fontsize=14, color="black")
     for spine in ax_state.spines.values():
         spine.set_linewidth(_SPINE_W)
@@ -732,18 +868,21 @@ def plot_cell_crop_timecourse_montage(
         width=_TICK_W, length=_TICK_LEN, labelsize=12, colors="black",
     )
 
+    snapshot_coords = [
+        _get_coordinate(
+            particle_df,
+            frame,
+            coordinate_mode,
+            max_frame_distance=coordinate_max_frame_distance,
+        )
+        for frame in snapshot_frames_movie
+    ]
+
     normalized_by_channel: list[list[np.ndarray]] = []
-    projection_cache: dict = {}
     for ch in channels:
         ch_idx = int(ch["index"])
         snapshot_crops = []
-        for frame in snapshot_frames_movie:
-            coord = _get_coordinate(
-                particle_df,
-                frame,
-                coordinate_mode,
-                max_frame_distance=coordinate_max_frame_distance,
-            )
+        for frame, coord in zip(snapshot_frames_movie, snapshot_coords):
             if coord is None:
                 snapshot_crops.append(_blank_crop(crop_size_px))
             else:
@@ -752,6 +891,7 @@ def plot_cell_crop_timecourse_montage(
                     image_TZYXC, frame, y, x, ch_idx, crop_size_px,
                     gaussian_filter_value=gaussian_filter_value,
                     projection_cache=projection_cache,
+                    average_3_frames=display_3_crops_averaged,
                 ))
 
         trajectory_crops = []
@@ -774,6 +914,9 @@ def plot_cell_crop_timecourse_montage(
 
     crop_axes: list[list] = []
     rgb_rows: list[list[np.ndarray]] = []
+    # Label every crop, but keep stamps compact so dense 60-crop montages stay readable.
+    crop_time_label_fontsize = 3.5
+    crop_time_label_pad = 0.5
     for row_idx, ch in enumerate(channels):
         row_axes = []
         rgb_row = []
@@ -782,16 +925,25 @@ def plot_cell_crop_timecourse_montage(
             norm_crop = normalized_by_channel[row_idx][col_idx]
             if use_cmap:
                 ax.imshow(norm_crop, interpolation="nearest",
-                          cmap=crop_colormap, vmin=0, vmax=1, aspect="auto")
+                          cmap=crop_colormap, vmin=0, vmax=1, aspect="equal")
             else:
                 rgb = _to_rgb(norm_crop, ch["crop_color"])
-                rgb_row.append(rgb)
-                ax.imshow(rgb, interpolation="nearest", aspect="auto")
+                ax.imshow(rgb, interpolation="nearest", aspect="equal")
+            # Always build RGB-tinted crop for merge row
+            rgb_for_merge = _to_rgb(norm_crop, ch["crop_color"])
+            rgb_row.append(rgb_for_merge)
             ax.set_axis_off()
             if row_idx == 0 and show_crop_time_labels:
                 # Time label relative to trimmed axis (not original movie)
                 t_label_min = (frame - trim_start) * dt / 60.0
-                ax.set_title(f"{t_label_min:.1f}", fontsize=7, pad=2, color="black")
+                label_spacing_min = (trimmed_n / max(n_cols, 1)) * dt / 60.0
+                fmt = ".1f" if label_spacing_min >= 0.1 else ".2f"
+                ax.set_title(
+                    f"{t_label_min:{fmt}}",
+                    fontsize=crop_time_label_fontsize,
+                    pad=crop_time_label_pad,
+                    color="black",
+                )
             if col_idx == 0:
                 ax.text(
                     -0.12, 0.5, ch["label"], transform=ax.transAxes,
@@ -807,7 +959,7 @@ def plot_cell_crop_timecourse_montage(
         for col_idx, frame in enumerate(snapshot_frames_movie):
             ax = fig.add_subplot(crop_gs[merge_idx, col_idx])
             rgb = np.clip(rgb_rows[0][col_idx] + rgb_rows[1][col_idx], 0, 1)
-            ax.imshow(rgb, interpolation="nearest", aspect="auto")
+            ax.imshow(rgb, interpolation="nearest", aspect="equal")
             ax.set_axis_off()
             if col_idx == 0:
                 ax.text(
@@ -818,6 +970,47 @@ def plot_cell_crop_timecourse_montage(
         crop_axes.append(row_axes)
 
     return fig, {"trace": ax_trace, "state_bar": ax_state, "crops": crop_axes}
+
+
+def _selection_data_key(
+    selection,
+    apply_photobleaching: bool,
+    photobleaching_mode: str,
+    max_frames: int | None,
+):
+    """Cache key for grouping montage selections from the same loaded FOV."""
+    origin = selection["origin"]
+    return (
+        str(origin.lif_path),
+        int(origin.series_index),
+        str(origin.results_dir),
+        bool(apply_photobleaching),
+        photobleaching_mode,
+        float(origin.time_interval_seconds),
+        max_frames,
+    )
+
+
+def _group_selections_by_loaded_data(
+    selections,
+    apply_photobleaching: bool,
+    photobleaching_mode: str,
+    max_frames: int | None,
+):
+    """Return selections ordered to maximize LIF/projection cache reuse."""
+    indexed = list(enumerate(selections))
+    indexed.sort(
+        key=lambda item: (
+            _selection_data_key(
+                item[1],
+                apply_photobleaching,
+                photobleaching_mode,
+                max_frames,
+            ),
+            item[0],
+        )
+    )
+    return [selection for _, selection in indexed]
 
 
 def generate_representative_montage_pdf(
@@ -832,6 +1025,8 @@ def generate_representative_montage_pdf(
     panel_figsize: tuple | None = None,
     pdf_dpi: int = 200,
     save_individual_montages: bool = True,
+    save_combined_pdf: bool = True,
+    max_frames: int | None = None,
     verbose: bool = True,
     **plot_kwargs,
 ):
@@ -846,37 +1041,165 @@ def generate_representative_montage_pdf(
     binary_matrix = np.asarray(binary_matrix, dtype=float)
     set_publication_style()
 
-    # Subfolder for individual montage exports (only when enabled)
+    # Subfolders for individual montage exports (only when enabled)
     singles_dir = None
+    png_dir = None
+    svg_dir = None
     if save_individual_montages:
         singles_dir = output_path.parent / "montage_singles"
-        singles_dir.mkdir(parents=True, exist_ok=True)
+        png_dir = singles_dir / "png"
+        svg_dir = singles_dir / "svg"
+        png_dir.mkdir(parents=True, exist_ok=True)
+        svg_dir.mkdir(parents=True, exist_ok=True)
 
-    with PdfPages(str(output_path)) as pdf:
-        for page_start in range(0, len(selections), montages_per_page):
-            page = selections[page_start:page_start + montages_per_page]
-            # Panel size: default (18, 8) per panel, user-overridable
-            pw, ph = panel_figsize if panel_figsize is not None else (18, 8)
-            fig = plt.figure(figsize=(pw, ph * len(page)), facecolor="white")
-            page_gs = fig.add_gridspec(len(page), 1, hspace=0.40)
+    if save_combined_pdf:
+        with PdfPages(str(output_path)) as pdf:
+            for page_start in range(0, len(selections), montages_per_page):
+                page = selections[page_start:page_start + montages_per_page]
+                # Panel size: default (18, 8) per panel, user-overridable
+                pw, ph = panel_figsize if panel_figsize is not None else (18, 8)
+                fig = plt.figure(figsize=(pw, ph * len(page)), facecolor="white")
+                page_gs = fig.add_gridspec(len(page), 1, hspace=0.40)
 
-            for slot, selection in enumerate(page):
+                for slot, selection in enumerate(page):
+                    origin = selection["origin"]
+                    data = load_montage_data_cached(
+                        origin,
+                        apply_photobleaching=apply_photobleaching,
+                        photobleaching_mode=photobleaching_mode,
+                        max_frames=max_frames,
+                        verbose=verbose,
+                    )
+                    n_movie_frames = int(data["image_TZYXC"].shape[0])
+                    snapshot_frames = auto_snapshot_frames(
+                        n_movie_frames, n_snapshots, origin.time_interval_seconds,
+                    )
+                    binary_row_index = int(selection["binary_row_index"])
+                    traj_id = selection.get("trajectory_id", "trajectory")
+                    title = None  # suppress provenance header on the plot
+                    plot_cell_crop_timecourse_montage(
+                        image_TZYXC=data["image_TZYXC"],
+                        tracking_df=data["tracking_df"],
+                        particle_id=origin.particle_id,
+                        snapshot_frames=snapshot_frames,
+                        time_interval_seconds=origin.time_interval_seconds,
+                        binary_state=binary_matrix[binary_row_index, :],
+                        first_valid_frame=origin.first_valid_frame,
+                        projection_cache=data.setdefault("projection_cache", {}),
+                        fig=fig,
+                        subplot_spec=page_gs[slot],
+                        title=title,
+                        **plot_kwargs,
+                    )
+
+                    if verbose:
+                        print(
+                            "    Montage:",
+                            traj_id,
+                            f"origin={selection.get('origin_row_index', '?')}",
+                            f"binary={binary_row_index}",
+                            f"lif={origin.lif_path.name}",
+                            f"scene={origin.series_index}",
+                            f"first_valid={origin.first_valid_frame}",
+                            f"movie_shape={data['image_TZYXC'].shape}",
+                            f"snapshots={snapshot_frames}",
+                        )
+
+                pdf.savefig(fig, dpi=pdf_dpi)
+                plt.close(fig)
+
+                # Save each montage as individual PNG + SVG
+                if save_individual_montages:
+                    for slot, selection in enumerate(page):
+                        origin = selection["origin"]
+                        data = load_montage_data_cached(
+                            origin,
+                            apply_photobleaching=apply_photobleaching,
+                            photobleaching_mode=photobleaching_mode,
+                            max_frames=max_frames,
+                            verbose=False,
+                        )
+                        n_movie_frames = int(data["image_TZYXC"].shape[0])
+                        snapshot_frames = auto_snapshot_frames(
+                            n_movie_frames, n_snapshots, origin.time_interval_seconds,
+                        )
+                        binary_row_index = int(selection["binary_row_index"])
+                        traj_id = selection.get("trajectory_id", "trajectory")
+                        title = None  # suppress provenance header
+                        single_fig = plt.figure(
+                            figsize=panel_figsize if panel_figsize is not None else (18, 8),
+                            facecolor="white",
+                        )
+                        single_gs = single_fig.add_gridspec(1, 1)
+                        plot_cell_crop_timecourse_montage(
+                            image_TZYXC=data["image_TZYXC"],
+                            tracking_df=data["tracking_df"],
+                            particle_id=origin.particle_id,
+                            snapshot_frames=snapshot_frames,
+                            time_interval_seconds=origin.time_interval_seconds,
+                            binary_state=binary_matrix[binary_row_index, :],
+                            first_valid_frame=origin.first_valid_frame,
+                            projection_cache=data.setdefault("projection_cache", {}),
+                            fig=single_fig,
+                            subplot_spec=single_gs[0],
+                            title=title,
+                            **plot_kwargs,
+                        )
+                        safe_name = str(traj_id).replace("/", "_")
+                        single_fig.savefig(
+                            png_dir / f"{safe_name}.png",
+                            dpi=pdf_dpi, bbox_inches="tight", facecolor="white",
+                        )
+                        single_fig.savefig(
+                            svg_dir / f"{safe_name}.svg",
+                            bbox_inches="tight", facecolor="white",
+                        )
+                        plt.close(single_fig)
+
+                _clear_lif_cache()
+    else:
+        # Only save individual montages
+        if save_individual_montages:
+            # Individual output filenames are independent, so process by FOV to
+            # reuse loaded image stacks and projection/filter caches.
+            grouped_selections = _group_selections_by_loaded_data(
+                selections,
+                apply_photobleaching,
+                photobleaching_mode,
+                max_frames,
+            )
+            last_data_key = None
+            for selection in grouped_selections:
+                data_key = _selection_data_key(
+                    selection,
+                    apply_photobleaching,
+                    photobleaching_mode,
+                    max_frames,
+                )
+                if last_data_key is not None and data_key != last_data_key:
+                    _clear_lif_cache()
+                last_data_key = data_key
+
                 origin = selection["origin"]
                 data = load_montage_data_cached(
                     origin,
                     apply_photobleaching=apply_photobleaching,
                     photobleaching_mode=photobleaching_mode,
+                    max_frames=max_frames,
                     verbose=verbose,
                 )
                 n_movie_frames = int(data["image_TZYXC"].shape[0])
-                snapshot_frames = auto_snapshot_frames(n_movie_frames, n_snapshots)
+                snapshot_frames = auto_snapshot_frames(
+                    n_movie_frames, n_snapshots, origin.time_interval_seconds,
+                )
                 binary_row_index = int(selection["binary_row_index"])
                 traj_id = selection.get("trajectory_id", "trajectory")
-                title = (
-                    f'{traj_id} | '
-                    f"{origin.lif_path.name} | scene {origin.series_index + 1} | "
-                    f"particle {origin.particle_id}"
+                title = None  # suppress provenance header
+                single_fig = plt.figure(
+                    figsize=panel_figsize if panel_figsize is not None else (18, 8),
+                    facecolor="white",
                 )
+                single_gs = single_fig.add_gridspec(1, 1)
                 plot_cell_crop_timecourse_montage(
                     image_TZYXC=data["image_TZYXC"],
                     tracking_df=data["tracking_df"],
@@ -885,15 +1208,26 @@ def generate_representative_montage_pdf(
                     time_interval_seconds=origin.time_interval_seconds,
                     binary_state=binary_matrix[binary_row_index, :],
                     first_valid_frame=origin.first_valid_frame,
-                    fig=fig,
-                    subplot_spec=page_gs[slot],
+                    projection_cache=data.setdefault("projection_cache", {}),
+                    fig=single_fig,
+                    subplot_spec=single_gs[0],
                     title=title,
                     **plot_kwargs,
                 )
+                safe_name = str(traj_id).replace("/", "_")
+                single_fig.savefig(
+                    png_dir / f"{safe_name}.png",
+                    dpi=pdf_dpi, bbox_inches="tight", facecolor="white",
+                )
+                single_fig.savefig(
+                    svg_dir / f"{safe_name}.svg",
+                    bbox_inches="tight", facecolor="white",
+                )
+                plt.close(single_fig)
 
                 if verbose:
                     print(
-                        "    Montage:",
+                        "    Montage (Single only):",
                         traj_id,
                         f"origin={selection.get('origin_row_index', '?')}",
                         f"binary={binary_row_index}",
@@ -903,62 +1237,12 @@ def generate_representative_montage_pdf(
                         f"movie_shape={data['image_TZYXC'].shape}",
                         f"snapshots={snapshot_frames}",
                     )
-
-            pdf.savefig(fig, dpi=pdf_dpi)
-            plt.close(fig)
-
-            # Save each montage as individual PNG + SVG
-            if save_individual_montages:
-                for slot, selection in enumerate(page):
-                    origin = selection["origin"]
-                    data = load_montage_data_cached(
-                        origin,
-                        apply_photobleaching=apply_photobleaching,
-                        photobleaching_mode=photobleaching_mode,
-                        verbose=False,
-                    )
-                    n_movie_frames = int(data["image_TZYXC"].shape[0])
-                    snapshot_frames = auto_snapshot_frames(n_movie_frames, n_snapshots)
-                    binary_row_index = int(selection["binary_row_index"])
-                    traj_id = selection.get("trajectory_id", "trajectory")
-                    title = (
-                        f'{traj_id} | '
-                        f"{origin.lif_path.name} | scene {origin.series_index + 1} | "
-                        f"particle {origin.particle_id}"
-                    )
-                    single_fig = plt.figure(
-                        figsize=panel_figsize if panel_figsize is not None else (18, 8),
-                        facecolor="white",
-                    )
-                    single_gs = single_fig.add_gridspec(1, 1)
-                    plot_cell_crop_timecourse_montage(
-                        image_TZYXC=data["image_TZYXC"],
-                        tracking_df=data["tracking_df"],
-                        particle_id=origin.particle_id,
-                        snapshot_frames=snapshot_frames,
-                        time_interval_seconds=origin.time_interval_seconds,
-                        binary_state=binary_matrix[binary_row_index, :],
-                        first_valid_frame=origin.first_valid_frame,
-                        fig=single_fig,
-                        subplot_spec=single_gs[0],
-                        title=title,
-                        **plot_kwargs,
-                    )
-                    safe_name = str(traj_id).replace("/", "_")
-                    single_fig.savefig(
-                        singles_dir / f"{safe_name}.png",
-                        dpi=pdf_dpi, bbox_inches="tight", facecolor="white",
-                    )
-                    single_fig.savefig(
-                        singles_dir / f"{safe_name}.svg",
-                        bbox_inches="tight", facecolor="white",
-                    )
-                    plt.close(single_fig)
-
             _clear_lif_cache()
 
     _clear_lif_cache()
     if verbose:
-        print(f"    Saved representative montage PDF: {output_path}")
-        print(f"    Individual montages saved to: {singles_dir}")
+        if save_combined_pdf:
+            print(f"    Saved representative montage PDF: {output_path}")
+        if save_individual_montages:
+            print(f"    Individual montages saved to: {singles_dir}")
     return output_path

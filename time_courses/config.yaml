@@ -1,0 +1,148 @@
+# ============================================================================
+#  Burst Quantification Pipeline Configuration
+# ============================================================================
+#  Usage:
+#      python run_burst_analysis.py                  # uses ./config.yaml
+#      python run_burst_analysis.py --config alt.yaml
+#
+#  The output folder is auto-generated from analysis.threshold
+#  (e.g. results_snr_3/), so different thresholds produce different folders.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+#  Data Paths
+# ----------------------------------------------------------------------------
+data_root: /Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF_long_movies
+
+# ----------------------------------------------------------------------------
+#  Construct Registry
+# ----------------------------------------------------------------------------
+#  Each entry defines one construct to process.
+#  Comment out entries to skip them.
+#    burst_ch: channel index for the folding/bursting signal (quantified)
+#    track_ch: channel index for the nascent protein (used for tracking QC)
+constructs:
+  sfGFP:
+    plasmid:  pRS027
+    burst_ch: 0
+    track_ch: 1
+
+  GFPuv:
+    plasmid:  pRS032
+    burst_ch: 0
+    track_ch: 1
+
+  sfGFP_Xbp1:
+    plasmid:  pRS038
+    burst_ch: 0
+    track_ch: 1
+
+  Xbp1_sfGFP:
+    plasmid:  pRS048
+    burst_ch: 0
+    track_ch: 1
+
+# ----------------------------------------------------------------------------
+#  Analysis Parameters
+# ----------------------------------------------------------------------------
+#  Single source of truth for the entire pipeline.
+#  Loader keys (SNR filter, shift_trajectories) and burst-module keys
+#  (threshold, smoothing, normalization) are all here.
+analysis:
+
+  # ── Time ──
+  time_interval_seconds: 5.0
+  max_frames: 360                      # cap all data at first N frames (null = no limit)
+
+  # ── Loader: SNR filter ──
+  # SNR is checked on the tracking channel (ch1) so QC reflects
+  # localization quality, not folding-signal brightness.
+  min_snr: 1
+  snr_channel_index: 1                 # null = filter on the loaded channel
+
+  # ── QC: trajectory length ──
+  min_valid_fraction: 0.30              # 30% of max_frames
+  min_valid_frames: null                # null = derive ceil(max_frames × min_valid_fraction)
+
+  # ── QC: internal missing frames ──
+  max_total_internal_nan_frames: 3      # total scattered internal NaNs (loader/MicroLive)
+  max_internal_nan_gap: 2               # longest consecutive NaN run (burst QC)
+
+  align_first_valid: true
+
+  # ── Burst module: smoothing ──
+  detrend_method: null
+  smooth_method: median
+  smooth_window: 3
+
+  # ── Burst module: normalization (for kymograph visualization) ──
+  normalization_method: per_trace_percentile
+  percentile_low: 5
+  percentile_high: 95
+
+  # ── Burst module: thresholding ──
+  # SNR-based ON/OFF: frames with per-frame SNR (folding ch) >= threshold
+  # are ON.  SNR is self-normalised by local noise, so the same cutoff
+  # works across constructs with different absolute brightness.
+  threshold_mode: snr
+  threshold: 3.0                       # SNR cutoff (standard microscopy detection)
+  off_baseline_quantile: 0.5           # unused in snr mode, kept for reference
+
+  # ── Burst module: event cleanup ──
+  min_event_duration_frames: 3
+  min_burst_duration_seconds: 30.0
+  exclude_terminal_dwell: true
+  count_initial_dwell: false             # initial OFF is left-censored
+
+  # ── Step 2.5: Representative montage ──
+  # These control which particles are selected and how the crop montage
+  # is generated.  Photobleaching correction is applied to the raw LIF
+  # scene before crop extraction (not to the burst matrix).
+  montage_n_particles: null            # null = all particles
+  montage_apply_photobleaching: true   # correct whole-scene before cropping
+  montage_photobleaching_mode: entire_image
+  montage_crop_size_px: 15             # NxN max-Z projected crop
+  montage_gaussian_filter_value: 1.0   # 0 = raw pixels; >0 smooths full max-Z frame
+  montage_n_snapshots: 60              # evenly spaced across movie
+  montage_coordinate_mode: nearest_valid
+  montage_coordinate_max_gap: 2        # frames; beyond = blank crop
+  montage_crop_norm_mode: per_crop_percentile  # high-contrast per-crop stretch
+  montage_crop_colormap: null           # null for per-channel color; "gray" for grayscale
+  montage_trace_norm_mode: raw          # "raw" | "min_max" | "total_intensity"
+  # Vertical layout: [trace, on_off_bar, crop_montage] as proportions.
+  montage_section_height_ratios: [0.68, 0.1, 0.22]
+  montage_show_crop_time_labels: true   # false to hide time text above crops
+  montage_trim_to_valid: true           # trim plot to valid data range
+  montage_display_3_crops_averaged: true  # average 3 temporal neighbours
+
+# ----------------------------------------------------------------------------
+#  Plot Parameters
+# ----------------------------------------------------------------------------
+#  Visual settings only — these don't affect scientific results.
+plots:
+
+  # ── Kymograph ──
+  kymograph_figsize: [8.5, 4.2]
+  kymograph_dpi: 300
+  kymograph_sort_by: density            # "density" = longest first; "fraction_on" = by ON time
+  max_traces_to_plot: 160
+
+  # ── Per-construct diagnostics ──
+  trace_figsize: [7, 5]
+  distribution_figsize: [7, 3.2]
+  summary_figsize: [4.5, 3.2]
+
+  # ── Cross-construct comparison ──
+  comparison_figsize: [5.5, 5.5]
+  plot_dpi: 300
+  use_bh_fdr: false                     # false = use standard uncorrected Mann-Whitney U p-values for plot star annotations; true = apply Benjamini-Hochberg FDR correction
+
+  # ── Montage PDF layout ──
+  montage_panels_per_page: 2           # panels per PDF page
+  montage_panel_figsize: [16, 5.75]    # [width, height_per_panel] in inches
+  montage_pdf_dpi: 300
+  montage_save_individual_montages: true   # also export each montage as PNG+SVG
+  montage_save_combined_pdf: false         # export multi-page combined PDF
+
+  # ── All-traces PDF ──
+  generate_all_traces_pdf: false        # export PDF with all traces (sequential order)

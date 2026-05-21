@@ -277,7 +277,11 @@ def preprocess_intensity_matrix(
             processed = mi.Utilities().shift_trajectories(
                 processed,
                 min_percentage_data_in_trajectory=min_valid_fraction,
-                max_missing_frames=max_internal_nan_gap,
+                # Stage 1 already applied the total-gap filter via
+                # max_total_internal_nan_frames; skip it here so the
+                # consecutive-gap parameter (max_internal_nan_gap) is not
+                # misinterpreted as a total count.
+                max_missing_frames=None,
             )
             n_after = processed.shape[0]
             if n_after < n_before:
@@ -289,20 +293,8 @@ def preprocess_intensity_matrix(
                 n_time = pre_shift.shape[1]
                 max_nans_allowed = int(round(n_time * (1 - min_valid_fraction)))
                 row_nan_counts = np.isnan(pre_shift).sum(axis=1)
-                mask_rel = row_nan_counts <= max_nans_allowed
-
-                def _total_internal_nans(row):
-                    v = np.where(~np.isnan(row))[0]
-                    if v.size == 0:
-                        return np.inf
-                    return int(np.isnan(row[v[0]:v[-1] + 1]).sum())
-
-                mask_abs = np.array(
-                    [_total_internal_nans(r) <= max_internal_nan_gap
-                     for r in pre_shift],
-                    dtype=bool,
-                )
-                shift_mask = mask_rel & mask_abs
+                # Only fraction filter applies in stage 2 (max_missing_frames=None)
+                shift_mask = row_nan_counts <= max_nans_allowed
                 # Sanity: surviving count should match the shifted matrix
                 if int(shift_mask.sum()) != n_after:
                     print(f"  WARNING: shift survival mask ({int(shift_mask.sum())}) "
@@ -476,14 +468,31 @@ def call_bursts(
     off_baseline_quantile=0.25,
     min_burst_duration_seconds=60.0,
     min_event_duration_frames=6,
+    max_nan_bridge=2,
     count_initial_dwell=True,
     exclude_terminal_dwell=True,
 ):
-    """Call bursts and dwells from a thresholding matrix.
+    """Call ON/OFF episodes from a thresholding matrix.
+
+    ON episodes ("bursts") are threshold-positive runs that also pass
+    the duration filter.  OFF episodes ("dwells") are the intervals
+    between accepted ON episodes.
+
+    Processing order after thresholding:
+      Step 2  – merge runs shorter than *min_event_duration_frames*
+      Step 2b – re-label ON runs failing *min_burst_duration_seconds* as OFF
+      Step 2c – bridge NaN gaps ≤ *max_nan_bridge* between same-state neighbours
+
+    Parameters
+    ----------
+    max_nan_bridge : int
+        Maximum NaN gap (frames) to bridge between same-state neighbours.
+        Set to 0 to disable bridging.
 
     Returns
     -------
     binary_matrix : ndarray (0/1/NaN)
+        Accepted ON episodes = 1, OFF = 0, unresolved = NaN.
     event_table : DataFrame
     trajectory_summary : DataFrame
     """
@@ -584,6 +593,40 @@ def call_bursts(
             if not merged_any:
                 break
         binary_matrix[i] = row
+
+    # Step 2b: Re-label ON runs failing min_burst_duration_seconds as OFF.
+    # After this, binary_matrix represents accepted ON episodes only.
+    # fraction_time_on will count only qualifying bursts.
+    for i in range(n_traces):
+        row = binary_matrix[i]
+        runs = runs_from_binary(row)
+        for val, start, end in runs:
+            if val == 1.0 and (end - start) * time_interval_seconds < min_burst_duration_seconds:
+                row[start:end] = 0.0
+        binary_matrix[i] = row
+
+    # Step 2c: Bridge short NaN gaps between same-state neighbours.
+    # Runs AFTER failed-ON relabeling so OFF-NaN-shortON-NaN-OFF
+    # → OFF-NaN-OFF-NaN-OFF → OFF (single continuous dwell).
+    n_bridged_total = 0
+    if max_nan_bridge > 0:
+        for i in range(n_traces):
+            row = binary_matrix[i]
+            runs = runs_from_binary(row)
+            for r_idx, (val, start, end) in enumerate(runs):
+                if not np.isnan(val):
+                    continue
+                if (end - start) > max_nan_bridge:
+                    continue
+                left_val = runs[r_idx - 1][0] if r_idx > 0 else np.nan
+                right_val = runs[r_idx + 1][0] if r_idx < len(runs) - 1 else np.nan
+                if np.isfinite(left_val) and left_val == right_val:
+                    row[start:end] = left_val
+                    n_bridged_total += (end - start)
+            binary_matrix[i] = row
+    if n_bridged_total > 0:
+        print(f"    NaN bridging: {n_bridged_total} frames bridged "
+              f"(max gap = {max_nan_bridge} frames)")
 
     # Step 3: Build event table and trajectory summary
     event_records = []
@@ -727,7 +770,7 @@ def plot_dual_channel_kymograph_from_matrix(
     p_hi=99,
     sort_by="fraction_on",
     trajectory_summary=None,
-    max_traces_to_plot=160,
+    max_traces_to_plot=None,
     ch0_color=None,
     ch1_color=None,
     nan_color=(0.0, 0.0, 0.0),
@@ -903,7 +946,7 @@ def plot_burst_results(
     condition="",
     kymograph_figsize=(14, 6),
     kymograph_dpi=300,
-    max_traces_to_plot=160,
+    max_traces_to_plot=None,
     trace_figsize=(12, 8),
     distribution_figsize=(8, 5),
     summary_figsize=(6, 4),
@@ -969,6 +1012,7 @@ def plot_burst_results(
         mask = (event_table["event_type"] == etype) & (event_table["passes_duration_filter"])
         if etype == "dwell":
             mask = mask & (~event_table["is_terminal_event"])
+            mask = mask & (~event_table["is_initial_dwell"])
         sub = event_table[mask]
         if len(sub) == 0:
             continue
@@ -1009,13 +1053,18 @@ def plot_burst_results(
     colors = {"ok": "#34a853", "constitutive": "#8e44ad",
               "too_sparse": "#f39c12",
               "too_many_internal_nans": "#c0392b",
+              "shift_alignment_filter": "#757575",
               "flat_zero": "#9e9e9e", "empty": "#424242"}
     bar_colors = [colors.get(r, "#757575") for r in counts.index]
     ax.barh(counts.index, counts.values, color=bar_colors, edgecolor="black", linewidth=0.5)
     ax.set_xlabel("Number of Trajectories")
     ax.set_title(f"{condition} - QC Summary")
+    # Place count labels with enough room so they aren't clipped
+    x_max = counts.values.max()
+    label_offset = max(x_max * 0.03, 0.5)
     for i, (v, r) in enumerate(zip(counts.values, counts.index)):
-        ax.text(v + 0.3, i, str(v), va="center", fontsize=10, color="black")
+        ax.text(v + label_offset, i, str(v), va="center", fontsize=10, color="black")
+    ax.set_xlim(right=x_max + x_max * 0.15)  # 15% padding for labels
     style_axes(ax, grid=False)
     fig.tight_layout()
     save_figure(fig, plots_dir / "qc_summary", plot_dpi)
@@ -1184,6 +1233,7 @@ def run_burst_quantification(
         off_baseline_quantile=off_baseline_quantile,
         min_burst_duration_seconds=min_burst_duration_seconds,
         min_event_duration_frames=min_event_duration_frames,
+        max_nan_bridge=max_internal_nan_gap,
         count_initial_dwell=count_initial_dwell,
         exclude_terminal_dwell=exclude_terminal_dwell,
     )

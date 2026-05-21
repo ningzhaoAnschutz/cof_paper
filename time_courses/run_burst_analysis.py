@@ -27,7 +27,10 @@ Note:
 """
 from __future__ import annotations
 
+import json
 import sys
+
+import yaml
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -70,97 +73,75 @@ from plotting import (
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CONFIGURATION
+# CONFIGURATION — loaded from config.yaml (override via --config in main)
 # ═══════════════════════════════════════════════════════════════════════════
 
-DATA_ROOT = Path("/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF_long_movies")
-OUTPUT_ROOT = repo_root / "time_courses" / "results" / "burst_quantification"
-
-# Construct registry: burst_ch=0 (folding), track_ch=1 (nascent protein)
-CONSTRUCT_REGISTRY = {
-    "sfGFP":      {"plasmid": "pRS027", "burst_ch": 0, "track_ch": 1},
-    "GFPuv":      {"plasmid": "pRS032", "burst_ch": 0, "track_ch": 1},
-    "sfGFP_Xbp1": {"plasmid": "pRS038", "burst_ch": 0, "track_ch": 1},
-    "Xbp1_sfGFP": {"plasmid": "pRS048", "burst_ch": 0, "track_ch": 1},
+_REQUIRED_SECTIONS = {"data_root", "constructs", "analysis", "plots"}
+_REQUIRED_CONSTRUCT_KEYS = {"plasmid", "burst_ch", "track_ch"}
+_REQUIRED_ANALYSIS_KEYS = {
+    "time_interval_seconds", "max_frames", "min_snr", "snr_channel_index",
+    "min_valid_fraction", "min_valid_frames",
+    "max_total_internal_nan_frames", "max_internal_nan_gap", "align_first_valid",
+    "detrend_method", "smooth_method", "smooth_window",
+    "normalization_method", "percentile_low", "percentile_high",
+    "threshold_mode", "threshold", "off_baseline_quantile",
+    "min_event_duration_frames", "min_burst_duration_seconds",
+    "exclude_terminal_dwell", "count_initial_dwell",
 }
 
-# Analysis parameters — single source of truth for the entire pipeline.
-# Loader keys (SNR filter, shift_trajectories) and burst-module keys
-# (threshold, smoothing, normalization) are all here.
-PARAMS = dict(
-    # ── Time ──
-    time_interval_seconds=5.0,
-    # ── Loader: SNR filter ──
-    # SNR is checked on the tracking channel (ch1) so QC reflects
-    # localization quality, not folding-signal brightness.
-    min_snr=1,
-    snr_channel_index=1,           # None → filter on the loaded channel
-    # ── Loader: shift_trajectories (stage 1 filter) ──
-    shift_min_data_fraction=0.4,   # min fraction of finite frames to keep
-    shift_max_missing_frames=3,    # max TOTAL internal NaN frames allowed
-    # ── Burst module: QC (stage 2 filter — runs after loader) ──
-    min_valid_fraction=0.50,
-    max_internal_nan_gap=2,        # max CONSECUTIVE NaN gap (stricter than total)
-    align_first_valid=True,
-    # ── Burst module: smoothing ──
-    detrend_method=None,
-    smooth_method="median",
-    smooth_window=3,
-    # ── Burst module: normalization (for kymograph visualization) ──
-    normalization_method="per_trace_percentile",
-    percentile_low=5,
-    percentile_high=95,
-    # ── Burst module: thresholding ──
-    # SNR-based ON/OFF: frames with per-frame SNR (folding ch) >= threshold
-    # are ON.  SNR is self-normalised by local noise, so the same cutoff
-    # works across constructs with different absolute brightness.
-    threshold_mode="snr",
-    threshold=3.0,                     # SNR cutoff (standard microscopy detection)
-    off_baseline_quantile=0.5,        # unused in snr mode, kept for reference
-    # ── Burst module: event cleanup ──
-    min_event_duration_frames=3,
-    min_burst_duration_seconds=30.0,
-    exclude_terminal_dwell=True,
-    count_initial_dwell=True,
-    # ── Step 2.5: Representative montage ──
-    # These control which particles are selected and how the crop montage
-    # is generated.  Photobleaching correction is applied to the raw LIF
-    # scene before crop extraction (not to the burst matrix).
-    montage_n_particles=None,            # particles per construct
-    montage_apply_photobleaching=True, # correct whole-scene before cropping
-    montage_photobleaching_mode="entire_image",
-    montage_crop_size_px=15,           # NxN max-Z projected crop
-    montage_gaussian_filter_value=1.0, # 0 = raw pixels; >0 smooths full max-Z frame
-    montage_n_snapshots=60,            # evenly spaced across movie
-    montage_coordinate_mode="nearest_valid",
-    montage_coordinate_max_gap=2,      # frames; beyond → blank crop
-    montage_crop_norm_mode="per_crop_percentile",  # high-contrast per-crop stretch
-    montage_crop_colormap="gray",      # "gray" for grayscale; None for legacy RGB
-    montage_trace_norm_mode="raw",     # "raw" | "min_max" | "total_intensity"
-    # Vertical layout: [trace, on_off_bar, crop_montage] as proportions.
-    # e.g. [0.60, 0.15, 0.25] = 60 % trace, 15 % state bar, 25 % crops.
-    montage_section_height_ratios=[0.72, 0.1, 0.18],
-    montage_show_crop_time_labels=True,  # False to hide time text above crops
-    montage_trim_to_valid=True,        # trim plot to valid data range
-)
 
-# Plot parameters (kept separate — these don't affect scientific results)
-PLOT_PARAMS = dict(
-    kymograph_figsize=(8.5, 4.2),
-    kymograph_dpi=300,
-    kymograph_sort_by="density",        # "density" = longest first; "fraction_on" = by ON time
-    max_traces_to_plot=160,
-    trace_figsize=(7, 5),
-    distribution_figsize=(7, 3.2),
-    summary_figsize=(4.5, 3.2),
-    comparison_figsize=(5.2, 4.5),
-    plot_dpi=300,
-    # ── Montage PDF layout ──
-    montage_panels_per_page=2,         # panels per PDF page
-    montage_panel_figsize=(16, 5.75),     # (width, height_per_panel) in inches
-    montage_pdf_dpi=200,
-    montage_save_individual_montages=True,  # also export each montage as PNG+SVG
-)
+def load_config(config_path: Path) -> tuple[Path, dict, dict, dict]:
+    """Load and validate pipeline configuration from a YAML file.
+
+    Returns
+    -------
+    data_root : Path
+        Root directory containing construct data folders.
+    construct_registry : dict
+        Mapping of construct name → {plasmid, burst_ch, track_ch}.
+    params : dict
+        Analysis parameters (flat dict, same keys as the old PARAMS).
+    plot_params : dict
+        Plot parameters (flat dict, same keys as the old PLOT_PARAMS).
+
+    Raises
+    ------
+    ValueError
+        If required sections, construct fields, or analysis keys are missing.
+    """
+    config_path = Path(config_path)
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+
+    # Validate top-level sections
+    missing = _REQUIRED_SECTIONS - set(cfg.keys())
+    if missing:
+        raise ValueError(f"Config missing required sections: {missing}")
+
+    # Validate constructs
+    constructs = cfg["constructs"]
+    for name, fields in constructs.items():
+        missing_fields = _REQUIRED_CONSTRUCT_KEYS - set(fields.keys())
+        if missing_fields:
+            raise ValueError(
+                f"Construct '{name}' missing required fields: {missing_fields}"
+            )
+
+    # Validate analysis params
+    analysis = cfg["analysis"]
+    missing_params = _REQUIRED_ANALYSIS_KEYS - set(analysis.keys())
+    if missing_params:
+        raise ValueError(f"Config 'analysis' missing required keys: {missing_params}")
+
+    return Path(cfg["data_root"]), constructs, analysis, cfg["plots"]
+
+
+_DEFAULT_CONFIG = Path(__file__).resolve().parent / "config.yaml"
+
+DATA_ROOT, CONSTRUCT_REGISTRY, PARAMS, PLOT_PARAMS = load_config(_DEFAULT_CONFIG)
+
+# Default output root — overridden in main() based on SNR threshold
+OUTPUT_ROOT = repo_root / "time_courses" / "results" / "burst_quantification"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -310,6 +291,77 @@ def _shift_survival_mask(matrix, min_valid_fraction, max_missing_frames):
     return mask_relative & mask_absolute
 
 
+def _resolve_min_valid_frames(params):
+    """Derive the absolute minimum number of valid frames per trajectory.
+
+    If ``min_valid_frames`` is explicitly set in *params*, return that.
+    Otherwise derive it as ``ceil(max_frames * min_valid_fraction)``.
+    Returns *None* if ``max_frames`` is also ``None``.
+    """
+    explicit = params.get("min_valid_frames")
+    if explicit is not None:
+        return int(explicit)
+    max_frames = params.get("max_frames")
+    frac = params["min_valid_fraction"]
+    if max_frames is None:
+        return None
+    return int(np.ceil(int(max_frames) * float(frac)))
+
+
+def _shift_pair_by_reference(
+    reference, companion, min_valid_fraction, max_missing_frames,
+):
+    """Left-align two matrices using shift offsets from *reference* only.
+
+    Both matrices are filtered using the same row mask (computed from
+    *reference*) and shifted by the same per-row offset (first valid
+    column in *reference*).  This guarantees that for every row *i*
+    and column *j*, both returned matrices refer to the same original
+    time-point.
+
+    Returns
+    -------
+    ref_shifted, comp_shifted : ndarray
+        Same shape, same row order, same per-row time alignment.
+    survival_mask : ndarray of bool
+        Row mask applied to the original matrices.
+    """
+    ref = np.asarray(reference, dtype=float)
+    comp = np.asarray(companion, dtype=float)
+    if ref.shape != comp.shape:
+        raise ValueError(
+            f"Shape mismatch: reference {ref.shape} vs companion {comp.shape}"
+        )
+
+    # Row filtering: use reference NaN pattern only
+    survival = _shift_survival_mask(ref, min_valid_fraction, max_missing_frames)
+    ref = ref[survival]
+    comp = comp[survival]
+
+    # Compute per-row shift offsets from reference and apply to both
+    n_rows, n_cols = ref.shape
+    ref_shifted = np.full_like(ref, np.nan)
+    comp_shifted = np.full_like(comp, np.nan)
+
+    for i in range(n_rows):
+        valid = np.where(~np.isnan(ref[i]))[0]
+        if valid.size == 0:
+            continue
+        offset = valid[0]
+        length = n_cols - offset
+        ref_shifted[i, :length] = ref[i, offset:]
+        comp_shifted[i, :length] = comp[i, offset:]
+
+    # Trim to last valid column in reference
+    col_has_data = np.any(np.isfinite(ref_shifted), axis=0)
+    if np.any(col_has_data):
+        last = len(col_has_data) - np.argmax(col_has_data[::-1])
+        ref_shifted = ref_shifted[:, :last]
+        comp_shifted = comp_shifted[:, :last]
+
+    return ref_shifted, comp_shifted, survival
+
+
 def _load_construct_matrix(data_folder, channel_index, verbose=True):
     """Load all tracking CSVs from a construct's results folder and extract
     the intensity matrix *and* per-frame SNR matrix for the given channel.
@@ -386,9 +438,29 @@ def _load_construct_matrix(data_folder, channel_index, verbose=True):
         particles = df["particle"].unique()
         if "frame" not in df.columns:
             continue
+
+        # ── Cap to max_frames BEFORE any particle/SNR logic ──
+        max_frames_cap = PARAMS.get("max_frames")
+        original_total = int(df["frame"].max()) + 1
+        if max_frames_cap is not None and max_frames_cap > 0:
+            df = df[df["frame"] < max_frames_cap].copy()
+            if df.empty:
+                if verbose:
+                    print(f"    FOV {rdir.name}: all frames beyond "
+                          f"max_frames={max_frames_cap} — skipped")
+                continue
+            # Recompute particles after filtering
+            particles = df["particle"].unique()
+
         total_frames = int(df["frame"].max()) + 1
+        if verbose and max_frames_cap is not None and original_total > total_frames:
+            print(f"    FOV {rdir.name}: capped {original_total} → {total_frames} frames")
+
         if total_frames_movie <= 0:
             total_frames_movie = total_frames
+        # Also cap total_frames_movie for ParticleOrigin
+        if max_frames_cap is not None and max_frames_cap > 0:
+            total_frames_movie = min(total_frames_movie, max_frames_cap)
 
         matrix = np.full((len(particles), total_frames), np.nan)
         snr_matrix = np.full((len(particles), total_frames), np.nan)
@@ -468,6 +540,12 @@ def _load_construct_matrix(data_folder, channel_index, verbose=True):
         padded_snr.append(s)
     combined = np.vstack(padded)
     snr_combined = np.vstack(padded_snr)
+
+    # Safety net: enforce max_frames cap after concatenation
+    max_frames_cap = PARAMS.get("max_frames")
+    if max_frames_cap is not None and max_frames_cap > 0 and combined.shape[1] > max_frames_cap:
+        combined = combined[:, :max_frames_cap]
+        snr_combined = snr_combined[:, :max_frames_cap]
     assert combined.shape == snr_combined.shape, (
         f"Intensity/SNR shape mismatch after vstack: {combined.shape} vs {snr_combined.shape}"
     )
@@ -480,27 +558,13 @@ def _load_construct_matrix(data_folder, channel_index, verbose=True):
         print(f"    Combined: {combined.shape[0]} trajectories × "
               f"{combined.shape[1]} frames (max across FOVs)")
 
-    # Left-align and filter using MicroLive (Stage 4 sync)
-    # survival_mask from intensity matrix applied to BOTH matrices.
-    survival_mask = _shift_survival_mask(
-        combined,
-        PARAMS["shift_min_data_fraction"],
-        PARAMS["shift_max_missing_frames"],
-    )
-    combined = mi.Utilities().shift_trajectories(
-        combined,
-        min_percentage_data_in_trajectory=PARAMS["shift_min_data_fraction"],
-        max_missing_frames=PARAMS["shift_max_missing_frames"],
-    )
-    # Apply the SAME left-alignment shift to the SNR matrix so columns
-    # stay synchronised with intensity.
-    snr_combined = mi.Utilities().shift_trajectories(
-        snr_combined,
-        min_percentage_data_in_trajectory=PARAMS["shift_min_data_fraction"],
-        max_missing_frames=PARAMS["shift_max_missing_frames"],
-    )
-    assert combined.shape == snr_combined.shape, (
-        f"Intensity/SNR shape mismatch after shift: {combined.shape} vs {snr_combined.shape}"
+    # Left-align and filter: compute shift offsets from intensity only,
+    # apply the SAME per-row offset to SNR so every (row, col) pair in
+    # both matrices refers to the same original time-point.
+    combined, snr_combined, survival_mask = _shift_pair_by_reference(
+        combined, snr_combined,
+        PARAMS["min_valid_fraction"],
+        PARAMS["max_total_internal_nan_frames"],
     )
     particle_origins = [origin for origin, keep in zip(all_origins, survival_mask) if keep]
     if combined.shape[0] != len(particle_origins):
@@ -508,6 +572,21 @@ def _load_construct_matrix(data_folder, channel_index, verbose=True):
             f"Origin/matrix row mismatch after shifting: "
             f"{len(particle_origins)} origins for {combined.shape[0]} rows"
         )
+
+    # ── Absolute minimum valid-frame floor ──
+    # Ensures every surviving trajectory has at least
+    # ceil(max_frames × min_valid_fraction) finite values (e.g. 108 of 360).
+    min_valid_frames = _resolve_min_valid_frames(PARAMS)
+    if min_valid_frames is not None:
+        n_valid_per_row = np.sum(np.isfinite(combined), axis=1)
+        keep = n_valid_per_row >= min_valid_frames
+        n_dropped = int((~keep).sum())
+        if n_dropped > 0 and verbose:
+            print(f"    Absolute floor: dropped {n_dropped} trajectories "
+                  f"with < {min_valid_frames} valid frames")
+        combined = combined[keep]
+        snr_combined = snr_combined[keep]
+        particle_origins = [o for o, k in zip(particle_origins, keep) if k]
 
     if verbose:
         print(f"    After shift/filter: {combined.shape[0]} trajectories × "
@@ -558,6 +637,16 @@ def run_per_construct_analysis():
         np.save(output_dir / "raw_matrix.npy", matrix_ch0)
         np.save(output_dir / "snr_matrix.npy", snr_ch0)
 
+        # Save provenance for reproducibility
+        provenance = {
+            "max_frames": PARAMS.get("max_frames"),
+            "matrix_shape": list(matrix_ch0.shape),
+            "time_interval_seconds": PARAMS["time_interval_seconds"],
+        }
+        (output_dir / "provenance.json").write_text(
+            json.dumps(provenance, indent=2)
+        )
+
         # Run burst quantification
         result = run_burst_quantification(
             input_matrix=matrix_ch0,
@@ -566,11 +655,14 @@ def run_per_construct_analysis():
             condition=full,
             **{k: v for k, v in PARAMS.items()
                if k not in ("min_snr", "snr_channel_index",
-                            "shift_min_data_fraction",
-                            "shift_max_missing_frames")
+                            "max_total_internal_nan_frames",
+                            "min_valid_frames",
+                            "max_frames",
+                            "align_first_valid")
                and not k.startswith("montage_")},
+            align_first_valid=False,  # already aligned by _shift_pair_by_reference
             **{k: v for k, v in PLOT_PARAMS.items()
-               if not k.startswith("montage_")},
+               if not k.startswith("montage_") and k not in ("generate_all_traces_pdf", "use_bh_fdr")},
         )
 
         all_results[short] = {
@@ -593,7 +685,7 @@ def run_per_construct_analysis():
             print("  ⚠ No trajectories passed QC")
 
         # Generate all-traces PDF (10 traces per page, sequential order)
-        if not ts.empty:
+        if not ts.empty and PLOT_PARAMS.get("generate_all_traces_pdf", True):
             generate_pdf(output_dir)
 
         # ── Dual-channel kymograph (Green=Folding ch0, Magenta=Nascent ch1) ──
@@ -637,7 +729,7 @@ def run_per_construct_analysis():
                 condition=full,
                 sort_by=PLOT_PARAMS.get("kymograph_sort_by", "density"),
                 trajectory_summary=result["trajectory_summary"].iloc[:n_rows],
-                max_traces_to_plot=PLOT_PARAMS.get("max_traces_to_plot", 160),
+                max_traces_to_plot=PLOT_PARAMS.get("max_traces_to_plot", None),
                 figsize=PLOT_PARAMS.get("kymograph_figsize", (8.5, 4.2)),
                 dpi=PLOT_PARAMS.get("kymograph_dpi", 300),
             )
@@ -822,6 +914,8 @@ def generate_representative_montages(all_results):
     height_ratios       = PARAMS["montage_section_height_ratios"]
     show_crop_time_labels = PARAMS.get("montage_show_crop_time_labels", True)
     trim_to_valid       = PARAMS.get("montage_trim_to_valid", True)
+    display_3_averaged  = PARAMS.get("montage_display_3_crops_averaged", False)
+    max_frames          = PARAMS.get("max_frames")
     montages_per_page   = PLOT_PARAMS["montage_panels_per_page"]
     panel_figsize       = PLOT_PARAMS.get("montage_panel_figsize", None)
     pdf_dpi             = PLOT_PARAMS.get("montage_pdf_dpi", 200)
@@ -872,7 +966,9 @@ def generate_representative_montages(all_results):
                 panel_figsize=panel_figsize,
                 pdf_dpi=pdf_dpi,
                 save_individual_montages=PLOT_PARAMS.get("montage_save_individual_montages", True),
+                save_combined_pdf=PLOT_PARAMS.get("montage_save_combined_pdf", True),
                 verbose=True,
+                max_frames=max_frames,
                 # Visual kwargs forwarded to plot_cell_crop_timecourse_montage
                 crop_size_px=crop_size_px,
                 gaussian_filter_value=gaussian_filter_val,
@@ -885,6 +981,7 @@ def generate_representative_montages(all_results):
                 section_height_ratios=height_ratios,
                 show_crop_time_labels=show_crop_time_labels,
                 trim_to_valid=trim_to_valid,
+                display_3_crops_averaged=display_3_averaged,
             )
         except Exception as e:
             print(
@@ -912,20 +1009,57 @@ def run_cross_construct_comparison(all_results):
     burst_durs = {}
     dwell_durs = {}
     frac_on_vals = {}
+    n_cells = {}          # unique FOVs (= cells)
+    n_trajectories = {}   # QC-passing trajectories
+    n_on_events = {}      # burst events (passing duration filter)
+    n_off_events = {}     # dwell events (non-terminal)
 
     for short, entry in all_results.items():
         result = entry["burst"] if isinstance(entry, dict) and "burst" in entry else entry
+        origins = entry.get("origins", []) if isinstance(entry, dict) else []
         ts = result["trajectory_summary"]
         et = result["event_table"]
         if ts.empty:
             continue
         constructs.append(short)
         frac_on_vals[short] = ts["fraction_time_on"].values
+        n_trajectories[short] = len(ts)
+
+        # Count cells: each unique results_dir in origins = 1 FOV = 1 cell.
+        # origins is parallel to the pre-QC matrix; trajectory_summary rows
+        # survived QC.  Map QC-passing trajectory IDs back to origins.
+        if origins:
+            qc_origin_indices = set()
+            for _, row in ts.iterrows():
+                tid = row.get("trajectory_id", "")
+                if isinstance(tid, str) and tid.startswith("traj_"):
+                    qc_origin_indices.add(int(tid.removeprefix("traj_")))
+            unique_dirs = set()
+            for idx in qc_origin_indices:
+                if idx < len(origins):
+                    unique_dirs.add(origins[idx].results_dir)
+            n_cells[short] = len(unique_dirs)
+        else:
+            n_cells[short] = 0
 
         bursts = et[(et["event_type"] == "burst") & et["passes_duration_filter"]]
-        dwells = et[(et["event_type"] == "dwell") & ~et["is_terminal_event"]]
-        burst_durs[short] = bursts["duration_minutes"].values
-        dwell_durs[short] = dwells["duration_minutes"].values
+        dwells = et[
+            (et["event_type"] == "dwell")
+            & ~et["is_terminal_event"]
+            & ~et["is_initial_dwell"]
+        ]
+
+        # Trajectory-level median durations (one value per trajectory)
+        burst_durs[short] = (
+            bursts.groupby("trajectory_id")["duration_minutes"].median().values
+            if not bursts.empty else np.array([])
+        )
+        dwell_durs[short] = (
+            dwells.groupby("trajectory_id")["duration_minutes"].median().values
+            if not dwells.empty else np.array([])
+        )
+        n_on_events[short] = len(bursts)
+        n_off_events[short] = len(dwells)
 
     if not constructs:
         print("  No constructs with valid data — skipping comparison")
@@ -940,55 +1074,78 @@ def run_cross_construct_comparison(all_results):
     figsize = PLOT_PARAMS["comparison_figsize"]
     stats_rows = []
 
-    # ── 1. Burst duration comparison (Fig 3-style whisker plot) ──
+    def _build_xlabels(constructs, event_counts=None):
+        """Build multi-line x-axis labels: name / cells / traj / (events)."""
+        labels = []
+        for c in constructs:
+            parts = [
+                c,
+                f"{n_cells.get(c, 0)} cells",
+                f"{n_trajectories.get(c, 0)} traj",
+            ]
+            if event_counts is not None:
+                parts.append(f"({event_counts.get(c, 0)} events)")
+            labels.append("\n".join(parts))
+        return labels
+
+    # ── 1. ON episode duration comparison ──
     fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
     data = [burst_durs.get(c, []) for c in constructs]
+    xlabels_on = _build_xlabels(constructs, n_on_events)
     stats = box_with_points(
         ax,
         data,
         constructs,
-        ylabel="Burst Duration (min)",
-        title="Burst Duration",
+        ylabel="Observed ON Episode Duration (min)",
+        title="Observed ON Episode Duration (traj. median)",
+        xlabels=xlabels_on,
         show_stats=True,
         only_significant=True,
         max_percentile_significance=99.5,
+        use_bh_fdr=PLOT_PARAMS.get("use_bh_fdr", False),
     )
     for row in stats:
-        stats_rows.append({"metric": "burst_duration_minutes", **row})
+        stats_rows.append({"metric": "on_duration_minutes", **row})
     fig.tight_layout()
     save_figure(fig, comp_dir / "burst_duration_comparison", PLOT_PARAMS["plot_dpi"])
 
-    # ── 2. Dwell duration comparison (Fig 3-style whisker plot) ──
+    # ── 2. OFF episode duration comparison ──
     fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
     data = [dwell_durs.get(c, []) for c in constructs]
+    xlabels_off = _build_xlabels(constructs, n_off_events)
     stats = box_with_points(
         ax,
         data,
         constructs,
-        ylabel="Dwell Duration (min)",
-        title="Dwell Duration",
+        ylabel="Observed OFF Episode Duration (min)",
+        title="Observed OFF Episode Duration (traj. median)",
+        xlabels=xlabels_off,
         show_stats=True,
         only_significant=True,
         max_percentile_significance=99.5,
+        use_bh_fdr=PLOT_PARAMS.get("use_bh_fdr", False),
     )
     for row in stats:
-        stats_rows.append({"metric": "dwell_duration_minutes", **row})
+        stats_rows.append({"metric": "off_duration_minutes", **row})
     fig.tight_layout()
     save_figure(fig, comp_dir / "dwell_duration_comparison", PLOT_PARAMS["plot_dpi"])
 
-    # ── 3. Fraction ON comparison (Fig 3-style whisker plot) ──
+    # ── 3. Fraction of observed time ON ──
     fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
     data = [frac_on_vals.get(c, []) for c in constructs]
+    xlabels_frac = _build_xlabels(constructs)  # no event count for fraction
     stats = box_with_points(
         ax,
         data,
         constructs,
-        ylabel="Fraction Time ON",
-        title="Fraction Time ON",
+        ylabel="Fraction of Observed Time ON",
+        title="Fraction of Observed Time ON",
         ylim=(-0.05, 1.05),
+        xlabels=xlabels_frac,
         show_stats=True,
         only_significant=True,
         max_percentile_significance=99.5,
+        use_bh_fdr=PLOT_PARAMS.get("use_bh_fdr", False),
     )
     for row in stats:
         stats_rows.append({"metric": "fraction_time_on", **row})
@@ -1043,11 +1200,28 @@ def run_cross_construct_comparison(all_results):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Burst Quantification Analysis — CoF Long Movies",
+    )
+    parser.add_argument(
+        "--config", type=Path, default=_DEFAULT_CONFIG,
+        help="Path to YAML config file (default: ./config.yaml)",
+    )
+    args = parser.parse_args()
+
+    # Reload config if a non-default path was given
+    global DATA_ROOT, CONSTRUCT_REGISTRY, PARAMS, PLOT_PARAMS, OUTPUT_ROOT
+    if args.config != _DEFAULT_CONFIG:
+        DATA_ROOT, CONSTRUCT_REGISTRY, PARAMS, PLOT_PARAMS = load_config(args.config)
+
     print("╔══════════════════════════════════════════════════════════════╗")
     print("║   Burst Quantification Analysis — CoF Long Movies          ║")
     print("║   Channel 0 = folding (bursting)                           ║")
     print("║   Channel 1 = nascent protein (tracking)                   ║")
     print("╚══════════════════════════════════════════════════════════════╝")
+    print(f"  Config: {args.config}")
 
     # Verify data drive
     if not DATA_ROOT.exists():
@@ -1055,10 +1229,22 @@ def main():
         print("  Please mount the external drive and try again.")
         sys.exit(1)
 
+    # ── Build output directory from the SNR threshold in PARAMS ──
+    snr_val = PARAMS["threshold"]
+    # Format: results_snr_3 for 3.0, results_snr_2,_5 for 2.5, etc.
+    snr_str = str(snr_val).replace(".", ",_") if snr_val != int(snr_val) else str(int(snr_val))
+    output_dir_name = f"results_snr_{snr_str}"
+
+    OUTPUT_ROOT = repo_root / "time_courses" / output_dir_name
+    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n  SNR threshold = {snr_val}  →  {output_dir_name}/")
+    print("=" * 70)
+
     # Step 1: Detrend diagnostic
     run_detrend_diagnostic()
 
-    # Step 1.5: Signal contrast diagnostic (validates threshold choice)
+    # Step 1.5: Signal contrast diagnostic
     run_signal_contrast_diagnostic()
 
     # Step 2: Per-construct burst quantification
@@ -1072,9 +1258,10 @@ def main():
     if all_results:
         run_cross_construct_comparison(all_results)
 
+    plt.close("all")
+
     print("\n" + "=" * 70)
-    print("DONE. All results saved to:")
-    print(f"  {OUTPUT_ROOT}")
+    print(f"DONE. Results → {OUTPUT_ROOT}")
     print("=" * 70)
 
 
