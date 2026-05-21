@@ -56,8 +56,7 @@ human_genome/
 *.cds.all.fa
 kk_*
 *.pptx
-# ignore md files
-*.md
+
 # ignore log files
 *.log
 # ignore txt files
