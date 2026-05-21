@@ -998,9 +998,8 @@ def plot_burst_results(
 
 
     # ---- 4. Example traces: SKIPPED ──────────────────────────────────────
-    # The all-traces PDF (generate_all_traces_pdf.py) supersedes this plot.
-    # It renders every trajectory (10/page, sequential order) with the same
-    # intensity + ON/OFF layout, so a sampled subset is no longer needed.
+    # Sampled example traces are no longer generated here; the per-construct
+    # burst/dwell plots (sections 5/6) provide sufficient diagnostic detail.
 
     # ---- 5/6. Duration distributions ----
     for etype, fname in [("burst", "burst_duration_distribution"),

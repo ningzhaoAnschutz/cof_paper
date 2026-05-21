@@ -60,7 +60,7 @@ from plotting_montage_crops import (
     parse_metadata_txt,
     resolve_lif_path,
 )
-from generate_all_traces_pdf import generate_pdf
+
 from plotting import (
     TRACE_BLUE,
     TRACE_GRAY,
@@ -662,7 +662,7 @@ def run_per_construct_analysis():
                and not k.startswith("montage_")},
             align_first_valid=False,  # already aligned by _shift_pair_by_reference
             **{k: v for k, v in PLOT_PARAMS.items()
-               if not k.startswith("montage_") and k not in ("generate_all_traces_pdf", "use_bh_fdr")},
+               if not k.startswith("montage_") and k not in ("use_bh_fdr",)},
         )
 
         all_results[short] = {
@@ -684,9 +684,7 @@ def run_per_construct_analysis():
         else:
             print("  ⚠ No trajectories passed QC")
 
-        # Generate all-traces PDF (10 traces per page, sequential order)
-        if not ts.empty and PLOT_PARAMS.get("generate_all_traces_pdf", True):
-            generate_pdf(output_dir)
+
 
         # ── Dual-channel kymograph (Green=Folding ch0, Magenta=Nascent ch1) ──
         # Use only QC-passed trajectories (same as montage/burst results)
@@ -1170,6 +1168,7 @@ def run_cross_construct_comparison(all_results):
         summary_rows.append({
             "construct": full,
             "short_name": short,
+            "n_cells": n_cells.get(short, 0),
             "n_trajectories": len(ts),
             "n_bursts": int(ts["n_bursts"].sum()),
             "n_dwells": int(ts["n_dwells"].sum()),

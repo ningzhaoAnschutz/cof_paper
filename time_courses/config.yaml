@@ -103,7 +103,7 @@ analysis:
   montage_photobleaching_mode: entire_image
   montage_crop_size_px: 15             # NxN max-Z projected crop
   montage_gaussian_filter_value: 1.0   # 0 = raw pixels; >0 smooths full max-Z frame
-  montage_n_snapshots: 60              # evenly spaced across movie
+  montage_n_snapshots: 80              # evenly spaced across movie
   montage_coordinate_mode: nearest_valid
   montage_coordinate_max_gap: 2        # frames; beyond = blank crop
   montage_crop_norm_mode: per_crop_percentile  # high-contrast per-crop stretch
@@ -144,5 +144,3 @@ plots:
   montage_save_individual_montages: true   # also export each montage as PNG+SVG
   montage_save_combined_pdf: false         # export multi-page combined PDF
 
-  # ── All-traces PDF ──
-  generate_all_traces_pdf: false        # export PDF with all traces (sequential order)

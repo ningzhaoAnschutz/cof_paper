@@ -39,11 +39,11 @@ def set_publication_style() -> None:
             "ytick.color": "black",
             "font.family": "sans-serif",
             "font.sans-serif": [FONT_FAMILY, "DejaVu Sans"],
-            "axes.labelsize": 14,
+            "axes.labelsize": 12,
             "axes.titlesize": 14,
-            "xtick.labelsize": 12,
-            "ytick.labelsize": 12,
-            "legend.fontsize": 11,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "legend.fontsize": 10,
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
             "svg.fonttype": "none",
@@ -201,8 +201,10 @@ def box_with_points(
     seed: int = 7,
     show_stats: bool = False,
     only_significant: bool = True,
-    max_percentile_significance: float = 99.5,
+    max_percentile_significance: float = 99.0,
     use_bh_fdr: bool = True,
+    marker_size: int = 24,
+    alpha: float = 1.0,
 ) -> list[dict]:
     """Draw Fig-3-like white box/whisker plots with black jittered points."""
     clean_data = []
@@ -223,14 +225,14 @@ def box_with_points(
     ax.boxplot(
         clean_data,
         positions=np.arange(1, len(clean_data) + 1),
-        widths=0.48,
+        widths=0.5,
         patch_artist=True,
         showfliers=False,
         whis=(5, 95),
         boxprops={"facecolor": "white", "edgecolor": "black", "linewidth": 1.5},
-        medianprops={"color": "red", "linewidth": 1.6},
-        whiskerprops={"color": "black", "linewidth": 1.3},
-        capprops={"color": "black", "linewidth": 1.3},
+        medianprops={"color": "red", "linewidth": 1.5},
+        whiskerprops={"color": "black", "linewidth": 1.5},
+        capprops={"color": "black", "linewidth": 1.5},
     )
 
     rng = np.random.default_rng(seed)
@@ -242,9 +244,9 @@ def box_with_points(
         ax.scatter(
             np.full(plot_vals.size, xpos) + jitter,
             plot_vals,
-            s=10,
+            s=marker_size,
             c="black",
-            alpha=0.55,
+            alpha=alpha,
             linewidths=0,
             zorder=3,
         )
