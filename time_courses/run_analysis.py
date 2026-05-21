@@ -19,7 +19,7 @@ Channel semantics:
 
 Usage:
     conda activate microlive
-    python run_burst_analysis.py
+    python run_analysis.py
 
 Note:
     This script requires the ``microlive`` conda environment.

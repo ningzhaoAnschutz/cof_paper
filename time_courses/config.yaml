@@ -2,8 +2,8 @@
 #  Burst Quantification Pipeline Configuration
 # ============================================================================
 #  Usage:
-#      python run_burst_analysis.py                  # uses ./config.yaml
-#      python run_burst_analysis.py --config alt.yaml
+#      python run_analysis.py                  # uses ./config.yaml
+#      python run_analysis.py --config alt.yaml
 #
 #  The output folder is auto-generated from analysis.threshold
 #  (e.g. results_snr_3/), so different thresholds produce different folders.

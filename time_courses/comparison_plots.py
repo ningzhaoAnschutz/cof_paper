@@ -2,7 +2,7 @@
 # # Cross-Construct Comparison Plots
 #
 # Regenerates the three comparison box-with-swarm plots and summary statistics
-# from the **already-saved CSV data** produced by `run_burst_analysis.py`.
+# from the **already-saved CSV data** produced by `run_analysis.py`.
 #
 # No need to re-run the pipeline or mount the data drive.
 #
@@ -86,7 +86,7 @@ PLOT_GROUPS = [
     ),
 ]
 
-# Cell counts: read from the summary_table.csv produced by run_burst_analysis.py
+# Cell counts: read from the summary_table.csv produced by run_analysis.py
 _summary_path = RESULTS_DIR / "comparison" / "summary_table.csv"
 if _summary_path.exists():
     _summary_df = pd.read_csv(_summary_path)
@@ -96,10 +96,10 @@ if _summary_path.exists():
         print("WARNING: summary_table.csv missing n_cells or short_name column; cell counts will show 0")
         N_CELLS = {}
 else:
-    print(f"WARNING: {_summary_path} not found — run run_burst_analysis.py first; cell counts will show 0")
+    print(f"WARNING: {_summary_path} not found — run run_analysis.py first; cell counts will show 0")
     N_CELLS = {}
 
-# Plot settings — mirror PLOT_PARAMS from config.yaml / run_burst_analysis.py
+# Plot settings — mirror PLOT_PARAMS from config.yaml / run_analysis.py
 FIGSIZE = (5.5, 5.5)
 PLOT_DPI = 300
 USE_BH_FDR = False  # True → apply Benjamini-Hochberg FDR correction

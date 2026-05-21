@@ -994,7 +994,7 @@ def plot_burst_results(
 
     # ---- 2 & 3. Single-channel kymographs: SKIPPED ──────────────────────
     # Superseded by the dual-channel kymograph (plot_dual_channel_kymograph_from_matrix)
-    # generated in run_burst_analysis.py after QC filtering.
+    # generated in run_analysis.py after QC filtering.
 
 
     # ---- 4. Example traces: SKIPPED ──────────────────────────────────────
@@ -1513,7 +1513,7 @@ def main():
                         choices=["normalized_absolute", "fraction_of_trace_max",
                                  "absolute_raw", "off_baseline_mad"],
                         help="Threshold mode (snr mode is only available "
-                             "programmatically via run_burst_analysis.py)")
+                             "programmatically via run_analysis.py)")
     parser.add_argument("--off-baseline-quantile", type=float, default=0.25,
                         help="OFF-pool quantile for off_baseline_mad mode (default 0.25)")
     parser.add_argument("--smooth-method", default="median",
