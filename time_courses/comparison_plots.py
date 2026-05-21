@@ -4,8 +4,6 @@
 # Regenerates the three comparison box-with-swarm plots and summary statistics
 # from the **already-saved CSV data** produced by `run_analysis.py`.
 #
-# No need to re-run the pipeline or mount the data drive.
-#
 # **Plots generated** (PNG + SVG via `save_figure()`):
 # 1. Observed ON Episode Duration (trajectory-level median)
 # 2. Observed OFF Episode Duration (trajectory-level median)
@@ -54,7 +52,7 @@ set_publication_style()
 #  CONFIGURATION — edit this section for different pipeline runs
 # ═══════════════════════════════════════════════════════════════════
 
-# Which results directory to read.  Change this for a different SNR run.
+# Which results directory to read. 
 RESULTS_DIR = repo_root / "time_courses" / "results_snr_3"
 
 # All available constructs — must match the pipeline's processing order.
@@ -86,8 +84,9 @@ PLOT_GROUPS = [
     ),
 ]
 
-# Cell counts: read from the summary_table.csv produced by run_analysis.py
-_summary_path = RESULTS_DIR / "comparison" / "quantification" / "summary_table.csv"
+# Cell counts: read from the summary_table.csv produced by run_analysis.py,
+# which writes to comparison/run_analysis/quantification/.
+_summary_path = RESULTS_DIR / "comparison" / "run_analysis" / "quantification" / "summary_table.csv"
 if _summary_path.exists():
     _summary_df = pd.read_csv(_summary_path)
     if "n_cells" in _summary_df.columns and "short_name" in _summary_df.columns:
@@ -95,6 +94,7 @@ if _summary_path.exists():
     else:
         print("WARNING: summary_table.csv missing n_cells or short_name column; cell counts will show 0")
         N_CELLS = {}
+    print(f"Cell counts loaded from: {_summary_path}")
 else:
     print(f"WARNING: {_summary_path} not found — run run_analysis.py first; cell counts will show 0")
     N_CELLS = {}
@@ -102,7 +102,7 @@ else:
 # Plot settings — mirror PLOT_PARAMS from config.yaml / run_analysis.py
 FIGSIZE = (5.5, 5.5)
 PLOT_DPI = 300
-USE_BH_FDR = False  # True → apply Benjamini-Hochberg FDR correction
+USE_BH_FDR = True  # True → apply Benjamini-Hochberg FDR correction
 MAX_PERCENTILE = 99.0  # Visual outlier capping percentile (99th percentile)
 
 # Output directory (top-level; per-group subdirs created automatically)
@@ -125,6 +125,7 @@ print(f"Plot groups: {[g[0] for g in PLOT_GROUPS]}")
 frac_on_vals = {}   # short_name -> array of fraction_time_on (per trajectory)
 burst_durs = {}     # short_name -> array of traj-level median ON durations
 dwell_durs = {}     # short_name -> array of traj-level median OFF durations
+traj_lengths = {}   # short_name -> array of valid tracking durations (in minutes)
 n_trajectories = {} # short_name -> int
 n_on_events = {}    # short_name -> int (burst events passing duration filter)
 n_off_events = {}   # short_name -> int (dwell events, non-initial, non-terminal)
@@ -139,6 +140,7 @@ for short in CONSTRUCT_ORDER:
     traj_summary_df = pd.read_csv(traj_summary_path)
     event_table_df = pd.read_csv(event_table_path)
     frac_on_vals[short] = traj_summary_df["fraction_time_on"].values
+    traj_lengths[short] = traj_summary_df["n_valid_timepoints"].values * 5.0 / 60.0
     n_trajectories[short] = len(traj_summary_df)
     # Burst (ON) durations: events passing duration filter
     bursts_df = event_table_df[
@@ -209,7 +211,6 @@ def plot_group(group_name, short_names, display_labels):
     stats = box_with_points(
         ax, data, display_labels,
         ylabel="Observed ON Episode Duration (min)",
-        title="Observed ON Episode Duration (traj. median)",
         xlabels=xlabels,
         show_stats=True,
         only_significant=True,
@@ -229,7 +230,6 @@ def plot_group(group_name, short_names, display_labels):
     stats = box_with_points(
         ax, data, display_labels,
         ylabel="Observed OFF Episode Duration (min)",
-        title="Observed OFF Episode Duration (traj. median)",
         xlabels=xlabels,
         show_stats=True,
         only_significant=True,
@@ -249,7 +249,6 @@ def plot_group(group_name, short_names, display_labels):
     stats = box_with_points(
         ax, data, display_labels,
         ylabel="Fraction of Observed Time ON",
-        title="Fraction of Observed Time ON",
         ylim=(-0.05, 1.05),
         xlabels=xlabels,
         show_stats=True,
@@ -262,6 +261,26 @@ def plot_group(group_name, short_names, display_labels):
     fig.tight_layout()
     plt.show()
     save_figure(fig, plots_dir / "fraction_on_comparison", PLOT_DPI)
+
+    # ── Plot 4: Valid Trajectory Length ──
+    fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
+    data = [traj_lengths.get(c, []) for c in short_names]
+    xlabels = build_xlabels(short_names, display_labels)
+    stats = box_with_points(
+        ax, data, display_labels,
+        ylabel="Valid Trajectory Length (min)",
+        ylim=(0, 32),
+        xlabels=xlabels,
+        show_stats=True,
+        only_significant=True,
+        max_percentile_significance=MAX_PERCENTILE,
+        use_bh_fdr=USE_BH_FDR,
+    )
+    for row in stats:
+        group_stats_rows.append({"metric": "trajectory_length_minutes", **row})
+    fig.tight_layout()
+    plt.show()
+    save_figure(fig, plots_dir / "trajectory_length_comparison", PLOT_DPI)
 
     # ── Pairwise stats ──
     stats_df = pd.DataFrame(group_stats_rows)
@@ -276,6 +295,7 @@ def plot_group(group_name, short_names, display_labels):
         on_durs = burst_durs.get(short, np.array([]))
         off_durs = dwell_durs.get(short, np.array([]))
         frac_on = frac_on_vals.get(short, np.array([]))
+        lengths = traj_lengths.get(short, np.array([]))
         summary_rows.append({
             "short_name": short,
             "n_cells": N_CELLS.get(short, 0),
@@ -296,6 +316,10 @@ def plot_group(group_name, short_names, display_labels):
             "median_fraction_on": round(float(np.median(frac_on)), 4) if len(frac_on) > 0 else np.nan,
             "std_fraction_on": round(float(np.std(frac_on, ddof=1)), 4) if len(frac_on) > 1 else np.nan,
             "sem_fraction_on": round(float(np.std(frac_on, ddof=1) / np.sqrt(len(frac_on))), 4) if len(frac_on) > 1 else np.nan,
+            "mean_trajectory_length_min": round(float(np.mean(lengths)), 3) if len(lengths) > 0 else np.nan,
+            "median_trajectory_length_min": round(float(np.median(lengths)), 3) if len(lengths) > 0 else np.nan,
+            "std_trajectory_length_min": round(float(np.std(lengths, ddof=1)), 3) if len(lengths) > 1 else np.nan,
+            "sem_trajectory_length_min": round(float(np.std(lengths, ddof=1) / np.sqrt(len(lengths))), 3) if len(lengths) > 1 else np.nan,
         })
     summary_df = pd.DataFrame(summary_rows)
     summary_path = quant_dir / "summary_table.csv"

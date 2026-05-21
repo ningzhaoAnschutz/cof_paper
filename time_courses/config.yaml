@@ -98,7 +98,7 @@ analysis:
   # These control which particles are selected and how the crop montage
   # is generated.  Photobleaching correction is applied to the raw LIF
   # scene before crop extraction (not to the burst matrix).
-  montage_n_particles: null            # null = all particles
+  montage_n_particles: 0            # null = all particles
   montage_apply_photobleaching: true   # correct whole-scene before cropping
   montage_photobleaching_mode: entire_image
   montage_crop_size_px: 15             # NxN max-Z projected crop
@@ -125,7 +125,7 @@ plots:
   kymograph_figsize: [8.5, 4.2]
   kymograph_dpi: 300
   kymograph_sort_by: density            # "density" = longest first; "fraction_on" = by ON time
-  max_traces_to_plot: 160
+  max_traces_to_plot: null
 
   # ── Per-construct diagnostics ──
   trace_figsize: [7, 5]

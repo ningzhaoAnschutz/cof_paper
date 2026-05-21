@@ -77,3 +77,5 @@ kk_*
 *.docx
 modeling/
 diagrams_methods/
+plots_time_courses/
+quality_control/

@@ -688,19 +688,46 @@ def run_per_construct_analysis():
 
 
 
-        # ── Dual-channel kymograph (Green=Folding ch0, Magenta=Nascent ch1) ──
-        # Use only QC-passed trajectories (same as montage/burst results)
+        # ── Load ch1 (nascent) for kymograph plots ──
+        # Captures both intensity and SNR matrices, plus origins for
+        # provenance verification against ch0.
         nascent_ch = 1  # channel index for nascent
         try:
-            matrix_ch1_raw, _, _ = _load_construct_matrix(
+            matrix_ch1_raw, snr_ch1_raw, origins_ch1 = _load_construct_matrix(
                 DATA_ROOT / construct_name / "results",
                 nascent_ch,
                 verbose=False,
             )
-            # Get QC-passed row indices (same rows kept for ch0 in burst quant)
-            qc = result["qc_table"]
-            keep_idx = qc[qc["qc_status"] == "kept"]["trajectory_index"].values
+        except Exception as e:
+            print(f"  ⚠ ch1 loading failed — skipping kymographs: {e}")
+            continue
 
+        # ── Provenance assertion: ch0 and ch1 must have identical rows ──
+        if len(origins) != len(origins_ch1):
+            print(
+                f"  ⚠ ch0/ch1 origin count mismatch "
+                f"({len(origins)} vs {len(origins_ch1)}) — skipping kymographs"
+            )
+            continue
+        provenance_ok = True
+        for i_prov, (o0, o1) in enumerate(zip(origins, origins_ch1)):
+            if (o0.results_dir, o0.particle_id) != (o1.results_dir, o1.particle_id):
+                print(
+                    f"  ⚠ ch0/ch1 provenance mismatch at row {i_prov}: "
+                    f"{o0.results_dir.name}/p{o0.particle_id} vs "
+                    f"{o1.results_dir.name}/p{o1.particle_id} — skipping kymographs"
+                )
+                provenance_ok = False
+                break
+        if not provenance_ok:
+            continue
+
+        # Get QC-passed row indices (same rows kept for ch0 in burst quant)
+        qc = result["qc_table"]
+        keep_idx = qc[qc["qc_status"] == "kept"]["trajectory_index"].values
+
+        # ── Dual-channel INTENSITY kymograph (Green=Folding ch0, Magenta=Nascent ch1) ──
+        try:
             # Filter ch1 to the same rows that ch0 kept
             keep_idx_valid = keep_idx[keep_idx < matrix_ch1_raw.shape[0]]
             ch1_kept = matrix_ch1_raw[keep_idx_valid]
@@ -736,6 +763,68 @@ def run_per_construct_analysis():
             print(f"  ✓ Dual-channel kymograph saved ({n_rows} QC-passed trajectories)")
         except Exception as e:
             print(f"  ⚠ Dual-channel kymograph skipped: {e}")
+
+        # ── Dual-channel SNR kymograph (Green=Folding ch0, Magenta=Nascent ch1) ──
+        # Uses fixed-range normalization so absolute SNR values are preserved:
+        # SNR=0 → black, SNR=SNR_CAP → full brightness.
+        try:
+            if keep_idx.size == 0:
+                print("  ⚠ No QC-passing rows for SNR kymograph — skipped")
+            else:
+                # Validate keep_idx against both pre-QC SNR matrices
+                if keep_idx.max() >= snr_ch0.shape[0]:
+                    raise RuntimeError(
+                        f"keep_idx max ({keep_idx.max()}) exceeds "
+                        f"snr_ch0 row count ({snr_ch0.shape[0]})"
+                    )
+                if keep_idx.max() >= snr_ch1_raw.shape[0]:
+                    raise RuntimeError(
+                        f"keep_idx max ({keep_idx.max()}) exceeds "
+                        f"snr_ch1_raw row count ({snr_ch1_raw.shape[0]})"
+                    )
+
+                snr_ch0_kept = snr_ch0[keep_idx]
+                snr_ch1_kept = snr_ch1_raw[keep_idx]
+
+                # Trim/pad columns to match
+                n_cols_snr = snr_ch0_kept.shape[1]
+                if snr_ch1_kept.shape[1] > n_cols_snr:
+                    snr_ch1_kept = snr_ch1_kept[:, :n_cols_snr]
+                elif snr_ch1_kept.shape[1] < n_cols_snr:
+                    pad_snr = np.full(
+                        (snr_ch1_kept.shape[0], n_cols_snr - snr_ch1_kept.shape[1]),
+                        np.nan,
+                    )
+                    snr_ch1_kept = np.hstack([snr_ch1_kept, pad_snr])
+
+                # Assert shape equality after padding/trimming
+                if snr_ch0_kept.shape != snr_ch1_kept.shape:
+                    raise RuntimeError(
+                        f"SNR shape mismatch after padding: "
+                        f"ch0={snr_ch0_kept.shape} vs ch1={snr_ch1_kept.shape}"
+                    )
+
+                n_rows_snr = snr_ch0_kept.shape[0]
+                snr_cap = float(PARAMS.get("threshold", 3.0)) * 2  # e.g. 6.0
+                plot_dual_channel_kymograph_from_matrix(
+                    ch0_matrix=snr_ch0_kept,
+                    ch1_matrix=snr_ch1_kept,
+                    output_dir=output_dir,
+                    time_interval_seconds=PARAMS["time_interval_seconds"],
+                    condition=f"{full} (SNR)",
+                    normalize="fixed_range",
+                    p_lo=0,
+                    p_hi=snr_cap,
+                    sort_by=PLOT_PARAMS.get("kymograph_sort_by", "density"),
+                    trajectory_summary=result["trajectory_summary"].iloc[:n_rows_snr],
+                    max_traces_to_plot=PLOT_PARAMS.get("max_traces_to_plot", None),
+                    figsize=PLOT_PARAMS.get("kymograph_figsize", (8.5, 4.2)),
+                    dpi=PLOT_PARAMS.get("kymograph_dpi", 300),
+                    filename_stem="kymograph_dual_channel_snr",
+                )
+                print(f"  ✓ SNR dual-channel kymograph saved ({n_rows_snr} QC-passed trajectories)")
+        except Exception as e:
+            print(f"  ⚠ SNR dual-channel kymograph skipped: {e}")
 
     return all_results
 
@@ -1001,7 +1090,7 @@ def run_cross_construct_comparison(all_results):
     print("STEP 3: Cross-Construct Comparison")
     print("=" * 70)
 
-    comp_dir = OUTPUT_ROOT / "comparison"
+    comp_dir = OUTPUT_ROOT / "comparison" / "run_analysis"
     plots_dir = comp_dir / "plots"
     quant_dir = comp_dir / "quantification"
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -1100,7 +1189,6 @@ def run_cross_construct_comparison(all_results):
         data,
         constructs,
         ylabel="Observed ON Episode Duration (min)",
-        title="Observed ON Episode Duration (traj. median)",
         xlabels=xlabels_on,
         show_stats=True,
         only_significant=True,
@@ -1121,7 +1209,6 @@ def run_cross_construct_comparison(all_results):
         data,
         constructs,
         ylabel="Observed OFF Episode Duration (min)",
-        title="Observed OFF Episode Duration (traj. median)",
         xlabels=xlabels_off,
         show_stats=True,
         only_significant=True,
@@ -1142,7 +1229,6 @@ def run_cross_construct_comparison(all_results):
         data,
         constructs,
         ylabel="Fraction of Observed Time ON",
-        title="Fraction of Observed Time ON",
         ylim=(-0.05, 1.05),
         xlabels=xlabels_frac,
         show_stats=True,

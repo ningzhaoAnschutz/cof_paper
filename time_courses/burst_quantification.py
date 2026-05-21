@@ -777,6 +777,7 @@ def plot_dual_channel_kymograph_from_matrix(
     figsize=(14, 6),
     dpi=300,
     show=False,
+    filename_stem="kymograph_dual_channel",
 ):
     """Render a dual-channel additive-blend kymograph from two matrices.
 
@@ -871,6 +872,13 @@ def plot_dual_channel_kymograph_from_matrix(
             elif mode == "per_trace_max":
                 mx = max(np.max(vals), 1e-9)
                 normed = row / mx
+            elif mode == "fixed_range":
+                # plo/phi are absolute data bounds, not percentiles.
+                # Use case: SNR kymograph where plo=0, phi=SNR_CAP.
+                lo = float(plo)
+                hi = float(phi)
+                scale = max(hi - lo, 1e-9)
+                normed = (row - lo) / scale
             else:  # raw → global percentile fallback
                 all_f = X[np.isfinite(X)]
                 lo = np.percentile(all_f, plo) if all_f.size else 0
@@ -923,7 +931,7 @@ def plot_dual_channel_kymograph_from_matrix(
     if output_dir is not None:
         plots_dir = Path(output_dir) / "plots" / "quality_control"
         plots_dir.mkdir(parents=True, exist_ok=True)
-        save_figure(fig, plots_dir / "kymograph_dual_channel", dpi)
+        save_figure(fig, plots_dir / filename_stem, dpi)
 
     if show:
         plt.show()
