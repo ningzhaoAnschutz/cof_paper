@@ -87,7 +87,7 @@ PLOT_GROUPS = [
 ]
 
 # Cell counts: read from the summary_table.csv produced by run_analysis.py
-_summary_path = RESULTS_DIR / "comparison" / "summary_table.csv"
+_summary_path = RESULTS_DIR / "comparison" / "quantification" / "summary_table.csv"
 if _summary_path.exists():
     _summary_df = pd.read_csv(_summary_path)
     if "n_cells" in _summary_df.columns and "short_name" in _summary_df.columns:
@@ -131,8 +131,8 @@ n_off_events = {}   # short_name -> int (dwell events, non-initial, non-terminal
 
 for short in CONSTRUCT_ORDER:
     construct_dir = RESULTS_DIR / short
-    traj_summary_path = construct_dir / "trajectory_summary.csv"
-    event_table_path = construct_dir / "event_table.csv"
+    traj_summary_path = construct_dir / "quantification" / "trajectory_summary.csv"
+    event_table_path = construct_dir / "quantification" / "event_table.csv"
     if not traj_summary_path.exists() or not event_table_path.exists():
         print(f"  WARNING: Missing data for {short}, skipping")
         continue
@@ -190,8 +190,12 @@ def build_xlabels(short_names, display_labels, event_counts=None):
 
 def plot_group(group_name, short_names, display_labels):
     """Generate the 3 comparison plots + stats + summary for one group."""
-    out_dir = COMP_DIR / group_name if group_name != "all" else COMP_DIR
-    out_dir.mkdir(parents=True, exist_ok=True)
+    subdir = "all_constructs" if group_name == "all" else group_name
+    out_dir = COMP_DIR / subdir
+    plots_dir = out_dir / "plots"
+    quant_dir = out_dir / "quantification"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    quant_dir.mkdir(parents=True, exist_ok=True)
     group_stats_rows = []
     # Adjust figure width for number of conditions
     n_conditions = len(short_names)
@@ -216,7 +220,7 @@ def plot_group(group_name, short_names, display_labels):
         group_stats_rows.append({"metric": "on_duration_minutes", **row})
     fig.tight_layout()
     plt.show()
-    save_figure(fig, out_dir / "burst_duration_comparison", PLOT_DPI)
+    save_figure(fig, plots_dir / "burst_duration_comparison", PLOT_DPI)
 
     # ── Plot 2: OFF Episode Duration ──
     fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
@@ -236,7 +240,7 @@ def plot_group(group_name, short_names, display_labels):
         group_stats_rows.append({"metric": "off_duration_minutes", **row})
     fig.tight_layout()
     plt.show()
-    save_figure(fig, out_dir / "dwell_duration_comparison", PLOT_DPI)
+    save_figure(fig, plots_dir / "dwell_duration_comparison", PLOT_DPI)
 
     # ── Plot 3: Fraction of Observed Time ON ──
     fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
@@ -257,11 +261,11 @@ def plot_group(group_name, short_names, display_labels):
         group_stats_rows.append({"metric": "fraction_time_on", **row})
     fig.tight_layout()
     plt.show()
-    save_figure(fig, out_dir / "fraction_on_comparison", PLOT_DPI)
+    save_figure(fig, plots_dir / "fraction_on_comparison", PLOT_DPI)
 
     # ── Pairwise stats ──
     stats_df = pd.DataFrame(group_stats_rows)
-    stats_path = out_dir / "pairwise_mannwhitney_stats.csv"
+    stats_path = quant_dir / "pairwise_mannwhitney_stats.csv"
     stats_df.to_csv(stats_path, index=False)
     print(f"  Pairwise statistics → {stats_path}")
     print(stats_df)
@@ -294,7 +298,7 @@ def plot_group(group_name, short_names, display_labels):
             "sem_fraction_on": round(float(np.std(frac_on, ddof=1) / np.sqrt(len(frac_on))), 4) if len(frac_on) > 1 else np.nan,
         })
     summary_df = pd.DataFrame(summary_rows)
-    summary_path = out_dir / "summary_table.csv"
+    summary_path = quant_dir / "summary_table.csv"
     summary_df.to_csv(summary_path, index=False)
     print(f"  Summary table → {summary_path}")
     print(summary_df)

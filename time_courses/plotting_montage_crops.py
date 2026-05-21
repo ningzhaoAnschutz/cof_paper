@@ -1033,7 +1033,7 @@ def generate_representative_montage_pdf(
     """Generate a multi-page PDF of representative crop montages.
 
     When ``save_individual_montages`` is True (default), each montage is
-    also saved as a separate PNG and SVG in a ``montage_singles/``
+    also saved as a separate PNG and SVG in a ``plots_time_courses/``
     subfolder next to the PDF.
     """
     output_path = Path(output_path)
@@ -1046,7 +1046,7 @@ def generate_representative_montage_pdf(
     png_dir = None
     svg_dir = None
     if save_individual_montages:
-        singles_dir = output_path.parent / "montage_singles"
+        singles_dir = output_path.parent / "plots_time_courses"
         png_dir = singles_dir / "png"
         svg_dir = singles_dir / "svg"
         png_dir.mkdir(parents=True, exist_ok=True)

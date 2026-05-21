@@ -634,8 +634,10 @@ def run_per_construct_analysis():
 
         # Save raw matrices for reproducibility
         output_dir.mkdir(parents=True, exist_ok=True)
-        np.save(output_dir / "raw_matrix.npy", matrix_ch0)
-        np.save(output_dir / "snr_matrix.npy", snr_ch0)
+        quant_dir = output_dir / "quantification"
+        quant_dir.mkdir(parents=True, exist_ok=True)
+        np.save(quant_dir / "raw_matrix.npy", matrix_ch0)
+        np.save(quant_dir / "snr_matrix.npy", snr_ch0)
 
         # Save provenance for reproducibility
         provenance = {
@@ -643,7 +645,7 @@ def run_per_construct_analysis():
             "matrix_shape": list(matrix_ch0.shape),
             "time_interval_seconds": PARAMS["time_interval_seconds"],
         }
-        (output_dir / "provenance.json").write_text(
+        (quant_dir / "provenance.json").write_text(
             json.dumps(provenance, indent=2)
         )
 
@@ -1000,7 +1002,10 @@ def run_cross_construct_comparison(all_results):
     print("=" * 70)
 
     comp_dir = OUTPUT_ROOT / "comparison"
-    comp_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir = comp_dir / "plots"
+    quant_dir = comp_dir / "quantification"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    quant_dir.mkdir(parents=True, exist_ok=True)
 
     # Collect data
     constructs = []
@@ -1105,7 +1110,7 @@ def run_cross_construct_comparison(all_results):
     for row in stats:
         stats_rows.append({"metric": "on_duration_minutes", **row})
     fig.tight_layout()
-    save_figure(fig, comp_dir / "burst_duration_comparison", PLOT_PARAMS["plot_dpi"])
+    save_figure(fig, plots_dir / "burst_duration_comparison", PLOT_PARAMS["plot_dpi"])
 
     # ── 2. OFF episode duration comparison ──
     fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
@@ -1126,7 +1131,7 @@ def run_cross_construct_comparison(all_results):
     for row in stats:
         stats_rows.append({"metric": "off_duration_minutes", **row})
     fig.tight_layout()
-    save_figure(fig, comp_dir / "dwell_duration_comparison", PLOT_PARAMS["plot_dpi"])
+    save_figure(fig, plots_dir / "dwell_duration_comparison", PLOT_PARAMS["plot_dpi"])
 
     # ── 3. Fraction of observed time ON ──
     fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
@@ -1148,10 +1153,10 @@ def run_cross_construct_comparison(all_results):
     for row in stats:
         stats_rows.append({"metric": "fraction_time_on", **row})
     fig.tight_layout()
-    save_figure(fig, comp_dir / "fraction_on_comparison", PLOT_PARAMS["plot_dpi"])
+    save_figure(fig, plots_dir / "fraction_on_comparison", PLOT_PARAMS["plot_dpi"])
 
     stats_df = pd.DataFrame(stats_rows)
-    stats_path = comp_dir / "pairwise_mannwhitney_stats.csv"
+    stats_path = quant_dir / "pairwise_mannwhitney_stats.csv"
     stats_df.to_csv(stats_path, index=False)
 
     # ── 4. Summary table ──
@@ -1187,11 +1192,11 @@ def run_cross_construct_comparison(all_results):
         })
 
     summary_df = pd.DataFrame(summary_rows)
-    summary_df.to_csv(comp_dir / "summary_table.csv", index=False)
-    print(f"\n  Summary table saved to {comp_dir / 'summary_table.csv'}")
+    summary_df.to_csv(quant_dir / "summary_table.csv", index=False)
+    print(f"\n  Summary table saved to {quant_dir / 'summary_table.csv'}")
     print(f"  Pairwise Mann-Whitney statistics saved to {stats_path}")
     print(f"\n{summary_df.to_string(index=False)}")
-    print(f"\n  Comparison plots saved to {comp_dir}")
+    print(f"\n  Comparison plots saved to {plots_dir}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

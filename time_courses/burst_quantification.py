@@ -921,7 +921,7 @@ def plot_dual_channel_kymograph_from_matrix(
     fig.tight_layout()
 
     if output_dir is not None:
-        plots_dir = Path(output_dir) / "plots"
+        plots_dir = Path(output_dir) / "plots" / "quality_control"
         plots_dir.mkdir(parents=True, exist_ok=True)
         save_figure(fig, plots_dir / "kymograph_dual_channel", dpi)
 
@@ -960,7 +960,7 @@ def plot_burst_results(
 ):
     """Generate 8 diagnostic plots and save as PNG + SVG."""
     set_publication_style()
-    plots_dir = Path(output_dir) / "plots"
+    plots_dir = Path(output_dir) / "plots" / "quality_control"
     plots_dir.mkdir(parents=True, exist_ok=True)
     dt = time_interval_seconds
     n_traces, n_time = raw_matrix.shape
@@ -1169,7 +1169,8 @@ def run_burst_quantification(
         # Still save params and QC table for debugging/provenance
         if save_intermediates:
             output_dir = Path(output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
+            quant_dir = output_dir / "quantification"
+            quant_dir.mkdir(parents=True, exist_ok=True)
             zero_params = {
                 "condition": condition,
                 "time_interval_seconds": time_interval_seconds,
@@ -1180,10 +1181,10 @@ def run_burst_quantification(
                 "timestamp": datetime.now().isoformat(),
                 "note": "No trajectories passed QC.",
             }
-            with open(output_dir / "params.json", "w") as f:
+            with open(quant_dir / "params.json", "w") as f:
                 json.dump(zero_params, f, indent=2)
-            qc_table.to_csv(output_dir / "qc_table.csv", index=False)
-            print(f"  Saved params.json and qc_table.csv to {output_dir}")
+            qc_table.to_csv(quant_dir / "qc_table.csv", index=False)
+            print(f"  Saved params.json and qc_table.csv to {quant_dir}")
         return {
             "raw_matrix": raw_matrix, "processed_matrix": processed_matrix,
             "normalized_matrix": np.empty((0, 0)),
@@ -1286,15 +1287,17 @@ def run_burst_quantification(
 
     # Save
     if save_intermediates:
-        with open(output_dir / "params.json", "w") as f:
+        quant_dir = output_dir / "quantification"
+        quant_dir.mkdir(parents=True, exist_ok=True)
+        with open(quant_dir / "params.json", "w") as f:
             json.dump(params, f, indent=2)
-        qc_table.to_csv(output_dir / "qc_table.csv", index=False)
-        event_table.to_csv(output_dir / "event_table.csv", index=False)
-        trajectory_summary.to_csv(output_dir / "trajectory_summary.csv", index=False)
-        np.save(output_dir / "processed_matrix.npy", processed_matrix)
-        np.save(output_dir / "normalized_matrix.npy", normalized_matrix)
-        np.save(output_dir / "binary_matrix.npy", binary_matrix)
-        print(f"  Saved outputs to {output_dir}")
+        qc_table.to_csv(quant_dir / "qc_table.csv", index=False)
+        event_table.to_csv(quant_dir / "event_table.csv", index=False)
+        trajectory_summary.to_csv(quant_dir / "trajectory_summary.csv", index=False)
+        np.save(quant_dir / "processed_matrix.npy", processed_matrix)
+        np.save(quant_dir / "normalized_matrix.npy", normalized_matrix)
+        np.save(quant_dir / "binary_matrix.npy", binary_matrix)
+        print(f"  Saved outputs to {quant_dir}")
 
     # Plot
     if generate_plots and n_kept > 0:
@@ -1323,7 +1326,7 @@ def run_burst_quantification(
             off_baseline_quantile=off_baseline_quantile,
             kymograph_sort_by=kymograph_sort_by,
         )
-        print(f"  Plots saved to {output_dir / 'plots'}")
+        print(f"  Plots saved to {output_dir / 'plots' / 'quality_control'}")
 
     return {
         "raw_matrix": raw_kept,
