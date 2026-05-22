@@ -8,10 +8,10 @@ on the **folding channel (ch0)** and generating per-construct diagnostics
 plus a cross-construct comparison panel.
 
 Constructs:
-    sfGFP      → pRS027 (4sfGFP-2mCh)
-    GFPuv      → pRS032 (4GFPuv-2mCh)
-    sfGFP_Xbp1 → pRS038 (4sfGFP-2mCh-Xbp1)
-    Xbp1_sfGFP → pRS048 (Xbp1-4sfGFP-2mCh)
+    sfGFP      -- pRS027 (4sfGFP-2mCh)
+    GFPuv      -- pRS032 (4GFPuv-2mCh)
+    sfGFP_Xbp1 -- pRS038 (4sfGFP-2mCh-Xbp1)
+    Xbp1_sfGFP -- pRS048 (Xbp1-4sfGFP-2mCh)
 
 Channel semantics:
     Channel 1 = nascent protein (always present, tracking channel)
@@ -45,7 +45,7 @@ from microlive import microscopy as mi
 
 # ── Path setup (matches notebook convention) ────────────────────────────────
 # This script lives in cof_paper/time_courses/
-repo_root = Path(__file__).resolve().parent.parent  # → cof_paper/
+repo_root = Path(__file__).resolve().parent.parent  # --> cof_paper/
 sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # time_courses/
 
@@ -70,6 +70,27 @@ from plotting import (
     set_publication_style,
     style_axes,
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HELPERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _describe_array(arr, decimals=3):
+    """Return dict with mean, median, std (ddof=1), sem for an array.
+
+    Returns np.nan for each stat if the array is too short.
+    Preserves the same rounding and NaN rules as the original
+    inline summary-table construction.
+    """
+    arr = np.asarray(arr, dtype=float)
+    n = len(arr)
+    return {
+        "mean": round(float(np.mean(arr)), decimals) if n > 0 else np.nan,
+        "median": round(float(np.median(arr)), decimals) if n > 0 else np.nan,
+        "std": round(float(np.std(arr, ddof=1)), decimals) if n > 1 else np.nan,
+        "sem": round(float(np.std(arr, ddof=1) / np.sqrt(n)), decimals) if n > 1 else np.nan,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -98,7 +119,7 @@ def load_config(config_path: Path) -> tuple[Path, dict, dict, dict]:
     data_root : Path
         Root directory containing construct data folders.
     construct_registry : dict
-        Mapping of construct name → {plasmid, burst_ch, track_ch}.
+        Mapping of construct name --> {plasmid, burst_ch, track_ch}.
     params : dict
         Analysis parameters (flat dict, same keys as the old PARAMS).
     plot_params : dict
@@ -194,7 +215,7 @@ def run_detrend_diagnostic():
         style_axes(ax, grid=False, spine_width=1.2, tick_size=10, label_size=11, title_size=11)
         if idx >= 2:
             ax.set_xlabel("Time (min)")
-        print(f"    ✓ {n_traces} trajectories × {n_time} timepoints")
+        print(f"    OK: {n_traces} trajectories x {n_time} timepoints")
 
     fig.suptitle("Detrend Diagnostic - Population Mean (Folding Channel)",
                  fontsize=14, fontname="Arial")
@@ -204,7 +225,7 @@ def run_detrend_diagnostic():
 
 
 def run_signal_contrast_diagnostic():
-    """Plot per-trace max/median ratio to validate that the 0.05 × max(FI)
+    """Plot per-trace max/median ratio to validate that the 0.05 * max(FI)
     threshold is appropriate (requires bimodal signal: high bursts vs.
     near-zero background, giving max/median >> 1)."""
     set_publication_style()
@@ -255,7 +276,7 @@ def run_signal_contrast_diagnostic():
               f"fraction > 2: {np.mean(ratios > 2):.1%}")
 
     fig.suptitle("Signal Contrast: max/median Ratio per Trace (ch0)\n"
-                 "Ratio >> 1 validates 0.05 × max threshold",
+                 "Ratio >> 1 validates 0.05 * max threshold",
                  fontsize=13, fontname="Arial")
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     save_figure(fig, diag_dir / "signal_contrast_diagnostic", dpi=PLOT_PARAMS["plot_dpi"])
@@ -362,6 +383,22 @@ def _shift_pair_by_reference(
     return ref_shifted, comp_shifted, survival
 
 
+def _pad_columns_to_reference(reference, target):
+    """Trim or NaN-pad *target* columns so its column count matches *reference*.
+
+    The reference matrix defines the column count.  This is intentionally
+    asymmetric: ch0 (folding) defines the time axis; ch1 (nascent) is
+    trimmed or padded to match.
+    """
+    n_cols = reference.shape[1]
+    if target.shape[1] > n_cols:
+        return target[:, :n_cols]
+    elif target.shape[1] < n_cols:
+        pad = np.full((target.shape[0], n_cols - target.shape[1]), np.nan)
+        return np.hstack([target, pad])
+    return target
+
+
 def _load_construct_matrix(data_folder, channel_index, verbose=True):
     """Load all tracking CSVs from a construct's results folder and extract
     the intensity matrix *and* per-frame SNR matrix for the given channel.
@@ -454,7 +491,7 @@ def _load_construct_matrix(data_folder, channel_index, verbose=True):
 
         total_frames = int(df["frame"].max()) + 1
         if verbose and max_frames_cap is not None and original_total > total_frames:
-            print(f"    FOV {rdir.name}: capped {original_total} → {total_frames} frames")
+            print(f"    FOV {rdir.name}: capped {original_total} --> {total_frames} frames")
 
         if total_frames_movie <= 0:
             total_frames_movie = total_frames
@@ -518,7 +555,7 @@ def _load_construct_matrix(data_folder, channel_index, verbose=True):
                     matrix[p_idx, :] = np.nan
                     snr_matrix[p_idx, :] = np.nan
         if verbose:
-            print(f"    FOV {rdir.name}: {matrix.shape[0]} particles × "
+            print(f"    FOV {rdir.name}: {matrix.shape[0]} particles x "
                   f"{matrix.shape[1]} frames")
         all_matrices.append(matrix)
         all_snr_matrices.append(snr_matrix)
@@ -555,7 +592,7 @@ def _load_construct_matrix(data_folder, channel_index, verbose=True):
             f"{len(all_origins)} origins for {combined.shape[0]} rows"
         )
     if verbose:
-        print(f"    Combined: {combined.shape[0]} trajectories × "
+        print(f"    Combined: {combined.shape[0]} trajectories x "
               f"{combined.shape[1]} frames (max across FOVs)")
 
     # Left-align and filter: compute shift offsets from intensity only,
@@ -575,7 +612,7 @@ def _load_construct_matrix(data_folder, channel_index, verbose=True):
 
     # ── Absolute minimum valid-frame floor ──
     # Ensures every surviving trajectory has at least
-    # ceil(max_frames × min_valid_fraction) finite values (e.g. 108 of 360).
+    # ceil(max_frames * min_valid_fraction) finite values (e.g. 108 of 360).
     min_valid_frames = _resolve_min_valid_frames(PARAMS)
     if min_valid_frames is not None:
         n_valid_per_row = np.sum(np.isfinite(combined), axis=1)
@@ -589,7 +626,7 @@ def _load_construct_matrix(data_folder, channel_index, verbose=True):
         particle_origins = [o for o, k in zip(particle_origins, keep) if k]
 
     if verbose:
-        print(f"    After shift/filter: {combined.shape[0]} trajectories × "
+        print(f"    After shift/filter: {combined.shape[0]} trajectories x "
               f"{combined.shape[1]} frames")
 
     # NOTE: Do NOT forward-fill here. The burst module handles forward-fill
@@ -630,7 +667,7 @@ def run_per_construct_analysis():
             print(f"  ERROR loading {construct_name}: {e}")
             continue
 
-        print(f"  Loaded: {matrix_ch0.shape[0]} trajectories × {matrix_ch0.shape[1]} timepoints")
+        print(f"  Loaded: {matrix_ch0.shape[0]} trajectories x {matrix_ch0.shape[1]} timepoints")
 
         # Save raw matrices for reproducibility
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -681,10 +718,10 @@ def run_per_construct_analysis():
             n_bursts = int(ts["n_bursts"].sum())
             n_dwells = int(ts["n_dwells"].sum())
             mean_frac = ts["fraction_time_on"].mean()
-            print(f"  ✓ {n_bursts} bursts, {n_dwells} dwells, "
+            print(f"  OK: {n_bursts} bursts, {n_dwells} dwells, "
                   f"mean fraction ON: {mean_frac:.3f}")
         else:
-            print("  ⚠ No trajectories passed QC")
+            print("  WARNING: No trajectories passed QC")
 
 
 
@@ -699,13 +736,13 @@ def run_per_construct_analysis():
                 verbose=False,
             )
         except Exception as e:
-            print(f"  ⚠ ch1 loading failed — skipping kymographs: {e}")
+            print(f"  WARNING: ch1 loading failed -- skipping kymographs: {e}")
             continue
 
         # ── Provenance assertion: ch0 and ch1 must have identical rows ──
         if len(origins) != len(origins_ch1):
             print(
-                f"  ⚠ ch0/ch1 origin count mismatch "
+                f"  WARNING: ch0/ch1 origin count mismatch "
                 f"({len(origins)} vs {len(origins_ch1)}) — skipping kymographs"
             )
             continue
@@ -713,7 +750,7 @@ def run_per_construct_analysis():
         for i_prov, (o0, o1) in enumerate(zip(origins, origins_ch1)):
             if (o0.results_dir, o0.particle_id) != (o1.results_dir, o1.particle_id):
                 print(
-                    f"  ⚠ ch0/ch1 provenance mismatch at row {i_prov}: "
+                    f"  WARNING: ch0/ch1 provenance mismatch at row {i_prov}: "
                     f"{o0.results_dir.name}/p{o0.particle_id} vs "
                     f"{o1.results_dir.name}/p{o1.particle_id} — skipping kymographs"
                 )
@@ -735,16 +772,7 @@ def run_per_construct_analysis():
             # ch0 post-QC from burst result
             ch0_kept = result["processed_matrix"]
 
-            # Trim/pad columns to match
-            n_cols = ch0_kept.shape[1]
-            if ch1_kept.shape[1] > n_cols:
-                ch1_kept = ch1_kept[:, :n_cols]
-            elif ch1_kept.shape[1] < n_cols:
-                pad = np.full(
-                    (ch1_kept.shape[0], n_cols - ch1_kept.shape[1]),
-                    np.nan,
-                )
-                ch1_kept = np.hstack([ch1_kept, pad])
+            ch1_kept = _pad_columns_to_reference(ch0_kept, ch1_kept)
 
             # Row-match (should already be equal, but safety)
             n_rows = min(ch0_kept.shape[0], ch1_kept.shape[0])
@@ -760,16 +788,16 @@ def run_per_construct_analysis():
                 figsize=PLOT_PARAMS.get("kymograph_figsize", (8.5, 4.2)),
                 dpi=PLOT_PARAMS.get("kymograph_dpi", 300),
             )
-            print(f"  ✓ Dual-channel kymograph saved ({n_rows} QC-passed trajectories)")
+            print(f"  OK: Dual-channel kymograph saved ({n_rows} QC-passed trajectories)")
         except Exception as e:
-            print(f"  ⚠ Dual-channel kymograph skipped: {e}")
+            print(f"  WARNING: Dual-channel kymograph skipped: {e}")
 
         # ── Dual-channel SNR kymograph (Green=Folding ch0, Magenta=Nascent ch1) ──
         # Uses fixed-range normalization so absolute SNR values are preserved:
-        # SNR=0 → black, SNR=SNR_CAP → full brightness.
+        # SNR=0 --> black, SNR=SNR_CAP --> full brightness.
         try:
             if keep_idx.size == 0:
-                print("  ⚠ No QC-passing rows for SNR kymograph — skipped")
+                print("  WARNING: No QC-passing rows for SNR kymograph -- skipped")
             else:
                 # Validate keep_idx against both pre-QC SNR matrices
                 if keep_idx.max() >= snr_ch0.shape[0]:
@@ -786,16 +814,9 @@ def run_per_construct_analysis():
                 snr_ch0_kept = snr_ch0[keep_idx]
                 snr_ch1_kept = snr_ch1_raw[keep_idx]
 
-                # Trim/pad columns to match
-                n_cols_snr = snr_ch0_kept.shape[1]
-                if snr_ch1_kept.shape[1] > n_cols_snr:
-                    snr_ch1_kept = snr_ch1_kept[:, :n_cols_snr]
-                elif snr_ch1_kept.shape[1] < n_cols_snr:
-                    pad_snr = np.full(
-                        (snr_ch1_kept.shape[0], n_cols_snr - snr_ch1_kept.shape[1]),
-                        np.nan,
-                    )
-                    snr_ch1_kept = np.hstack([snr_ch1_kept, pad_snr])
+                snr_ch1_kept = _pad_columns_to_reference(
+                    snr_ch0_kept, snr_ch1_kept
+                )
 
                 # Assert shape equality after padding/trimming
                 if snr_ch0_kept.shape != snr_ch1_kept.shape:
@@ -822,9 +843,9 @@ def run_per_construct_analysis():
                     dpi=PLOT_PARAMS.get("kymograph_dpi", 300),
                     filename_stem="kymograph_dual_channel_snr",
                 )
-                print(f"  ✓ SNR dual-channel kymograph saved ({n_rows_snr} QC-passed trajectories)")
+                print(f"  OK: SNR dual-channel kymograph saved ({n_rows_snr} QC-passed trajectories)")
         except Exception as e:
-            print(f"  ⚠ SNR dual-channel kymograph skipped: {e}")
+            print(f"  WARNING: SNR dual-channel kymograph skipped: {e}")
 
     return all_results
 
@@ -840,9 +861,9 @@ def run_per_construct_analysis():
 #    bursts, half closest to the median fraction-ON).
 #
 # 2. Each selection carries two indices:
-#      • origin_row_index  — row in the pre-QC input matrix → indexes
+#      * origin_row_index  -- row in the pre-QC input matrix --> indexes
 #        into the ParticleOrigin list built during _load_construct_matrix.
-#      • binary_row_index  — row in the post-QC binary_matrix → provides
+#      * binary_row_index  -- row in the post-QC binary_matrix --> provides
 #        the ON/OFF state vector for the figure's state bar.
 #
 # 3. For every selected particle, the raw LIF scene is loaded via
@@ -895,9 +916,9 @@ def _select_representative_particles(trajectory_summary, origins, n=4):
     """Pick N representative trajectories for montage display.
 
     Selection strategy:
-        • If ``n`` is None, select ALL trajectories sorted by trajectory
+        - If ``n`` is None, select ALL trajectories sorted by trajectory
           length (longest first, by ``n_valid_timepoints``).
-        • If ``n`` is an integer, select the top-N **longest** trajectories
+        - If ``n`` is an integer, select the top-N **longest** trajectories
           (most valid timepoints), consistent with the density-sorted
           kymograph convention.
     """
@@ -913,7 +934,7 @@ def _select_representative_particles(trajectory_summary, origins, n=4):
         [sort_col, "fraction_time_on"], ascending=[False, False],
     )
 
-    # n=None → all trajectories, longest first
+    # n=None --> all trajectories, longest first
     if n is None:
         return [_build_selection(row, origins) for _, row in by_length.iterrows()]
 
@@ -974,7 +995,7 @@ def validate_montage_selection(selection, binary_matrix):
             f"first_valid_frame {origin.first_valid_frame} is outside "
             f"movie length {origin.total_frames_movie}"
         )
-    print("    ✓ All checks passed")
+    print("    OK: All checks passed")
 
 
 def generate_representative_montages(all_results):
@@ -1035,7 +1056,7 @@ def generate_representative_montages(all_results):
         output_path = entry["output_dir"] / "plots" / f"montages_{short}.pdf"
         print(
             f"\n  {short}: {len(selections)} representative particles "
-            f"→ {output_path.name}"
+            f"--> {output_path.name}"
         )
 
         # Validate provenance before committing to LIF loading
@@ -1256,6 +1277,10 @@ def run_cross_construct_comparison(all_results):
         dd = dwell_durs.get(short, np.array([]))
         fo = frac_on_vals.get(short, np.array([]))
 
+        bd_stats = _describe_array(bd, decimals=3)
+        dd_stats = _describe_array(dd, decimals=3)
+        fo_stats = _describe_array(fo, decimals=4)
+
         summary_rows.append({
             "construct": full,
             "short_name": short,
@@ -1263,18 +1288,18 @@ def run_cross_construct_comparison(all_results):
             "n_trajectories": len(ts),
             "n_bursts": int(ts["n_bursts"].sum()),
             "n_dwells": int(ts["n_dwells"].sum()),
-            "mean_burst_dur_min": round(float(np.mean(bd)), 3) if len(bd) > 0 else np.nan,
-            "median_burst_dur_min": round(float(np.median(bd)), 3) if len(bd) > 0 else np.nan,
-            "std_burst_dur_min": round(float(np.std(bd, ddof=1)), 3) if len(bd) > 1 else np.nan,
-            "sem_burst_dur_min": round(float(np.std(bd, ddof=1) / np.sqrt(len(bd))), 3) if len(bd) > 1 else np.nan,
-            "mean_dwell_dur_min": round(float(np.mean(dd)), 3) if len(dd) > 0 else np.nan,
-            "median_dwell_dur_min": round(float(np.median(dd)), 3) if len(dd) > 0 else np.nan,
-            "std_dwell_dur_min": round(float(np.std(dd, ddof=1)), 3) if len(dd) > 1 else np.nan,
-            "sem_dwell_dur_min": round(float(np.std(dd, ddof=1) / np.sqrt(len(dd))), 3) if len(dd) > 1 else np.nan,
-            "mean_fraction_on": round(float(np.mean(fo)), 4) if len(fo) > 0 else np.nan,
-            "median_fraction_on": round(float(np.median(fo)), 4) if len(fo) > 0 else np.nan,
-            "std_fraction_on": round(float(np.std(fo, ddof=1)), 4) if len(fo) > 1 else np.nan,
-            "sem_fraction_on": round(float(np.std(fo, ddof=1) / np.sqrt(len(fo))), 4) if len(fo) > 1 else np.nan,
+            "mean_burst_dur_min": bd_stats["mean"],
+            "median_burst_dur_min": bd_stats["median"],
+            "std_burst_dur_min": bd_stats["std"],
+            "sem_burst_dur_min": bd_stats["sem"],
+            "mean_dwell_dur_min": dd_stats["mean"],
+            "median_dwell_dur_min": dd_stats["median"],
+            "std_dwell_dur_min": dd_stats["std"],
+            "sem_dwell_dur_min": dd_stats["sem"],
+            "mean_fraction_on": fo_stats["mean"],
+            "median_fraction_on": fo_stats["median"],
+            "std_fraction_on": fo_stats["std"],
+            "sem_fraction_on": fo_stats["sem"],
         })
 
     summary_df = pd.DataFrame(summary_rows)
@@ -1328,7 +1353,7 @@ def main():
     OUTPUT_ROOT = repo_root / "time_courses" / output_dir_name
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n  SNR threshold = {snr_val}  →  {output_dir_name}/")
+    print(f"\n  SNR threshold = {snr_val}  -->  {output_dir_name}/")
     print("=" * 70)
 
     # Step 1: Detrend diagnostic
@@ -1351,7 +1376,7 @@ def main():
     plt.close("all")
 
     print("\n" + "=" * 70)
-    print(f"DONE. Results → {OUTPUT_ROOT}")
+    print(f"DONE. Results --> {OUTPUT_ROOT}")
     print("=" * 70)
 
 

@@ -61,13 +61,16 @@ except ImportError:  # pragma: no cover - supports package-style imports
 # MicroLive integration (optional – graceful fallback if unavailable)
 # ---------------------------------------------------------------------------
 try:
+    import os as _os
     import sys as _sys
-    _MICROLIVE_ROOT = Path("/Users/nzlab-la/Desktop/microlive")
+    _MICROLIVE_ROOT = Path(
+        _os.environ.get("MICROLIVE_ROOT", "/Users/nzlab-la/Desktop/microlive")
+    )
     if str(_MICROLIVE_ROOT) not in _sys.path:
         _sys.path.insert(0, str(_MICROLIVE_ROOT))
     from microlive import microscopy as mi
     _HAS_MICROLIVE = True
-except Exception:
+except (ImportError, ModuleNotFoundError):
     _HAS_MICROLIVE = False
 
 
@@ -439,9 +442,9 @@ def runs_from_binary(binary_row):
 
 
 def _off_baseline_bar(row, k_mad, off_quantile):
-    """Per-trace bar = median(bottom off_quantile) + k_mad × MAD_off.
+    """Per-trace bar = median(bottom off_quantile) + k_mad * MAD_off.
 
-    MAD is scaled by 1.4826 so k_mad approximates the σ-multiplier under
+    MAD is scaled by 1.4826 so k_mad approximates the sigma-multiplier under
     Gaussian-noise assumptions. Returns NaN if the trace has too few finite
     or too few OFF-pool samples to estimate the baseline robustly.
     """
@@ -481,7 +484,7 @@ def call_bursts(
     Processing order after thresholding:
       Step 2  – merge runs shorter than *min_event_duration_frames*
       Step 2b – re-label ON runs failing *min_burst_duration_seconds* as OFF
-      Step 2c – bridge NaN gaps ≤ *max_nan_bridge* between same-state neighbours
+      Step 2c -- bridge NaN gaps <= *max_nan_bridge* between same-state neighbours
 
     Parameters
     ----------
@@ -532,7 +535,7 @@ def call_bursts(
             threshold_sources[i] = "raw"
             binary_matrix[i, compare_mask] = (raw_row[compare_mask] >= threshold_values[i]).astype(float)
         elif threshold_mode == "off_baseline_mad":
-            # Goldman-style: bar = OFF-baseline + k × MAD_off, computed
+            # Goldman-style: bar = OFF-baseline + k * MAD_off, computed
             # from the processed (smoothed) trace. `threshold` is k.
             proc_row = processed_matrix[i]
             compare_mask = finite & np.isfinite(proc_row)
@@ -607,7 +610,7 @@ def call_bursts(
 
     # Step 2c: Bridge short NaN gaps between same-state neighbours.
     # Runs AFTER failed-ON relabeling so OFF-NaN-shortON-NaN-OFF
-    # → OFF-NaN-OFF-NaN-OFF → OFF (single continuous dwell).
+    # --> OFF-NaN-OFF-NaN-OFF --> OFF (single continuous dwell).
     n_bridged_total = 0
     if max_nan_bridge > 0:
         for i in range(n_traces):
@@ -879,7 +882,7 @@ def plot_dual_channel_kymograph_from_matrix(
                 hi = float(phi)
                 scale = max(hi - lo, 1e-9)
                 normed = (row - lo) / scale
-            else:  # raw → global percentile fallback
+            else:  # raw --> global percentile fallback
                 all_f = X[np.isfinite(X)]
                 lo = np.percentile(all_f, plo) if all_f.size else 0
                 hi = np.percentile(all_f, phi) if all_f.size else 1
@@ -1104,7 +1107,7 @@ def run_burst_quantification(
     threshold=0.05,
     threshold_mode="fraction_of_trace_max",
     # For threshold_mode="off_baseline_mad": fraction of frames defining the
-    # per-trace OFF pool. Bar = median(OFF) + threshold × MAD_off × 1.4826.
+    # per-trace OFF pool. Bar = median(OFF) + threshold * MAD_off * 1.4826.
     off_baseline_quantile=0.25,
     min_event_duration_frames=6,
     min_burst_duration_seconds=60.0,
@@ -1151,7 +1154,7 @@ def run_burst_quantification(
     raw_matrix, trajectory_ids, valid_rows, col_slice = validate_intensity_matrix(
         raw_matrix, trajectory_ids
     )
-    print(f"  Validated: {raw_matrix.shape[0]} trajectories × {raw_matrix.shape[1]} timepoints")
+    print(f"  Validated: {raw_matrix.shape[0]} trajectories x {raw_matrix.shape[1]} timepoints")
 
     # Apply same row/col filtering to SNR matrix (Stage 5 sync)
     if snr_matrix is not None:
@@ -1395,7 +1398,7 @@ def _run_sanity_checks():
           np.full((10, n_time), np.nan),
           lambda r: r["processed_matrix"].shape[0] == 0)
 
-    # 3. Constant-high trace → kept as constitutive, 1 long burst
+    # 3. Constant-high trace --> kept as constitutive, 1 long burst
     _test("constant_trace_constitutive",
           np.full((5, n_time), 100.0),
           lambda r: len(r["trajectory_summary"]) == 5 and
@@ -1421,7 +1424,7 @@ def _run_sanity_checks():
     # 6. Mixed valid/invalid trajectories
     mixed = np.random.rand(20, n_time)
     mixed[0, :] = np.nan  # fully empty
-    mixed[1, :] = 0.0     # flat zero → removed
+    mixed[1, :] = 0.0     # flat zero --> removed
     mixed[2, :5] = np.nan  # mostly valid
     _test("mixed_validity",
           mixed,
@@ -1446,8 +1449,8 @@ def _run_sanity_checks():
                     r["trajectory_summary"]["fraction_time_on"].mean() < 0.65,
           threshold_mode="normalized_absolute", threshold=0.5)
 
-    # 9. off_baseline_mad on noise: bar = baseline + 4σ_off → very few frames
-    # cross it, so fraction_on should be small (≪ 0.5).
+    # 9. off_baseline_mad on noise: bar = baseline + 4*sigma_off --> very few frames
+    # cross it, so fraction_on should be small (<< 0.5).
     _test("noise_off_baseline_mad",
           noise,
           lambda r: r["trajectory_summary"].empty or
@@ -1456,7 +1459,7 @@ def _run_sanity_checks():
 
     # 10. Bimodal noise+pulse: pure noise with periodic positive pulses should
     # have fraction_on around the pulse duty cycle (not all-ON), under
-    # off_baseline_mad. Pulses every 40 frames, 8 frames wide → 20% duty.
+    # off_baseline_mad. Pulses every 40 frames, 8 frames wide --> 20% duty.
     rng = np.random.default_rng(7)
     bimodal = rng.standard_normal((30, n_time)) * 5 + 20  # background
     for t0 in range(20, n_time, 40):
@@ -1467,7 +1470,7 @@ def _run_sanity_checks():
                      0.10 < r["trajectory_summary"]["fraction_time_on"].mean() < 0.45),
           threshold_mode="off_baseline_mad", threshold=4.0)
 
-    # 11. SNR mode: square pulse with matching SNR matrix → detects the pulse
+    # 11. SNR mode: square pulse with matching SNR matrix --> detects the pulse
     snr_pulse_int = np.random.randn(5, n_time) * 2 + 10  # noisy background
     snr_pulse_snr = np.full((5, n_time), 1.0)              # low SNR everywhere
     snr_pulse_snr[:, 50:150] = 5.0                         # high SNR in pulse
@@ -1479,7 +1482,7 @@ def _run_sanity_checks():
           snr_matrix=snr_pulse_snr,
           threshold_mode="snr", threshold=3.0)
 
-    # 12. SNR mode without snr_matrix → must raise ValueError
+    # 12. SNR mode without snr_matrix --> must raise ValueError
     print("  ", end="")
     try:
         with tempfile.TemporaryDirectory() as tmpdir:

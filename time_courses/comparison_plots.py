@@ -84,104 +84,90 @@ PLOT_GROUPS = [
     ),
 ]
 
-# Cell counts: read from the summary_table.csv produced by run_analysis.py,
-# which writes to comparison/run_analysis/quantification/.
-_summary_path = RESULTS_DIR / "comparison" / "run_analysis" / "quantification" / "summary_table.csv"
-if _summary_path.exists():
-    _summary_df = pd.read_csv(_summary_path)
-    if "n_cells" in _summary_df.columns and "short_name" in _summary_df.columns:
-        N_CELLS = dict(zip(_summary_df["short_name"], _summary_df["n_cells"].astype(int)))
-    else:
-        print("WARNING: summary_table.csv missing n_cells or short_name column; cell counts will show 0")
-        N_CELLS = {}
-    print(f"Cell counts loaded from: {_summary_path}")
-else:
-    print(f"WARNING: {_summary_path} not found — run run_analysis.py first; cell counts will show 0")
-    N_CELLS = {}
-
 # Plot settings — mirror PLOT_PARAMS from config.yaml / run_analysis.py
 FIGSIZE = (5.5, 5.5)
 PLOT_DPI = 300
-USE_BH_FDR = True  # True → apply Benjamini-Hochberg FDR correction
+USE_BH_FDR = True  # True --> apply Benjamini-Hochberg FDR correction
 MAX_PERCENTILE = 99.0  # Visual outlier capping percentile (99th percentile)
 
 # Output directory (top-level; per-group subdirs created automatically)
 COMP_DIR = RESULTS_DIR / "comparison"
-COMP_DIR.mkdir(parents=True, exist_ok=True)
 
-print(f"Repo root:   {repo_root}")
-print(f"Results dir: {RESULTS_DIR}")
-print(f"Output dir:  {COMP_DIR}")
-print(f"Constructs:  {CONSTRUCT_ORDER}")
-print(f"Plot groups: {[g[0] for g in PLOT_GROUPS]}")
+def _load_construct_data():
+    """Load per-construct CSV data from the results directory.
 
-# ═══════════════════════════════════════════════════════════════════
-#  Load per-construct data
-#  ON/OFF durations use trajectory-level medians (one value per
-#  trajectory) to avoid pseudoreplication from pooled events.
-#  Initial and terminal OFF dwells are excluded (censored).
-# ═══════════════════════════════════════════════════════════════════
+    Returns dicts keyed by short construct name.
+    """
+    frac_on_vals = {}   # short_name -> array of fraction_time_on (per trajectory)
+    burst_durs = {}     # short_name -> array of traj-level median ON durations
+    dwell_durs = {}     # short_name -> array of traj-level median OFF durations
+    traj_lengths = {}   # short_name -> array of valid tracking durations (in minutes)
+    n_trajectories = {} # short_name -> int
+    n_on_events = {}    # short_name -> int (burst events passing duration filter)
+    n_off_events = {}   # short_name -> int (dwell events, non-initial, non-terminal)
 
-frac_on_vals = {}   # short_name -> array of fraction_time_on (per trajectory)
-burst_durs = {}     # short_name -> array of traj-level median ON durations
-dwell_durs = {}     # short_name -> array of traj-level median OFF durations
-traj_lengths = {}   # short_name -> array of valid tracking durations (in minutes)
-n_trajectories = {} # short_name -> int
-n_on_events = {}    # short_name -> int (burst events passing duration filter)
-n_off_events = {}   # short_name -> int (dwell events, non-initial, non-terminal)
-
-for short in CONSTRUCT_ORDER:
-    construct_dir = RESULTS_DIR / short
-    traj_summary_path = construct_dir / "quantification" / "trajectory_summary.csv"
-    event_table_path = construct_dir / "quantification" / "event_table.csv"
-    if not traj_summary_path.exists() or not event_table_path.exists():
-        print(f"  WARNING: Missing data for {short}, skipping")
-        continue
-    traj_summary_df = pd.read_csv(traj_summary_path)
-    event_table_df = pd.read_csv(event_table_path)
-    frac_on_vals[short] = traj_summary_df["fraction_time_on"].values
-    traj_lengths[short] = traj_summary_df["n_valid_timepoints"].values * 5.0 / 60.0
-    n_trajectories[short] = len(traj_summary_df)
-    # Burst (ON) durations: events passing duration filter
-    bursts_df = event_table_df[
-        (event_table_df["event_type"] == "burst") & event_table_df["passes_duration_filter"]
-    ]
-    n_on_events[short] = len(bursts_df)
-    # Dwell (OFF) durations: exclude initial (left-censored) and terminal
-    dwells_df = event_table_df[
-        (event_table_df["event_type"] == "dwell")
-        & ~event_table_df["is_terminal_event"]
-        & ~event_table_df["is_initial_dwell"]
-    ]
-    n_off_events[short] = len(dwells_df)
-    # Trajectory-level median durations (one value per trajectory)
-    burst_durs[short] = (
-        bursts_df.groupby("trajectory_id")["duration_minutes"].median().values
-        if not bursts_df.empty else np.array([])
-    )
-    dwell_durs[short] = (
-        dwells_df.groupby("trajectory_id")["duration_minutes"].median().values
-        if not dwells_df.empty else np.array([])
-    )
-    print(
-        f"  {short:12s} | {n_trajectories[short]:4d} traj | "
-        f"{n_on_events[short]:4d} ON events | {n_off_events[short]:4d} OFF events | "
-        f"{len(burst_durs[short]):4d} traj w/ ON | {len(dwell_durs[short]):4d} traj w/ OFF"
-    )
-print(f"\nLoaded {len(frac_on_vals)} constructs")
+    for short in CONSTRUCT_ORDER:
+        construct_dir = RESULTS_DIR / short
+        traj_summary_path = construct_dir / "quantification" / "trajectory_summary.csv"
+        event_table_path = construct_dir / "quantification" / "event_table.csv"
+        if not traj_summary_path.exists() or not event_table_path.exists():
+            print(f"  WARNING: Missing data for {short}, skipping")
+            continue
+        traj_summary_df = pd.read_csv(traj_summary_path)
+        event_table_df = pd.read_csv(event_table_path)
+        frac_on_vals[short] = traj_summary_df["fraction_time_on"].values
+        traj_lengths[short] = traj_summary_df["n_valid_timepoints"].values * 5.0 / 60.0
+        n_trajectories[short] = len(traj_summary_df)
+        # Burst (ON) durations: events passing duration filter
+        bursts_df = event_table_df[
+            (event_table_df["event_type"] == "burst") & event_table_df["passes_duration_filter"]
+        ]
+        n_on_events[short] = len(bursts_df)
+        # Dwell (OFF) durations: exclude initial (left-censored) and terminal
+        dwells_df = event_table_df[
+            (event_table_df["event_type"] == "dwell")
+            & ~event_table_df["is_terminal_event"]
+            & ~event_table_df["is_initial_dwell"]
+        ]
+        n_off_events[short] = len(dwells_df)
+        # Trajectory-level median durations (one value per trajectory)
+        burst_durs[short] = (
+            bursts_df.groupby("trajectory_id")["duration_minutes"].median().values
+            if not bursts_df.empty else np.array([])
+        )
+        dwell_durs[short] = (
+            dwells_df.groupby("trajectory_id")["duration_minutes"].median().values
+            if not dwells_df.empty else np.array([])
+        )
+        print(
+            f"  {short:12s} | {n_trajectories[short]:4d} traj | "
+            f"{n_on_events[short]:4d} ON events | {n_off_events[short]:4d} OFF events | "
+            f"{len(burst_durs[short]):4d} traj w/ ON | {len(dwell_durs[short]):4d} traj w/ OFF"
+        )
+    print(f"\nLoaded {len(frac_on_vals)} constructs")
+    return {
+        "frac_on_vals": frac_on_vals,
+        "burst_durs": burst_durs,
+        "dwell_durs": dwell_durs,
+        "traj_lengths": traj_lengths,
+        "n_trajectories": n_trajectories,
+        "n_on_events": n_on_events,
+        "n_off_events": n_off_events,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════
 #  Helpers
 # ═══════════════════════════════════════════════════════════════════
 
-def build_xlabels(short_names, display_labels, event_counts=None):
+def build_xlabels(short_names, display_labels, n_cells, n_trajectories,
+                  event_counts=None):
     """Build multi-line x-axis labels: label / cells / traj / (events)."""
     labels = []
     for short, label in zip(short_names, display_labels):
         parts = [
             label,
-            f"{N_CELLS.get(short, 0)} cells",
+            f"{n_cells.get(short, 0)} cells",
             f"{n_trajectories.get(short, 0)} traj",
         ]
         if event_counts is not None:
@@ -190,8 +176,24 @@ def build_xlabels(short_names, display_labels, event_counts=None):
     return labels
 
 
-def plot_group(group_name, short_names, display_labels):
-    """Generate the 3 comparison plots + stats + summary for one group."""
+def plot_group(group_name, short_names, display_labels, data_dicts, n_cells):
+    """Generate the 4 comparison plots + stats + summary for one group.
+
+    Parameters
+    ----------
+    data_dicts : dict
+        Output of ``_load_construct_data()``.
+    n_cells : dict
+        Mapping of short_name --> cell count.
+    """
+    burst_durs = data_dicts["burst_durs"]
+    dwell_durs = data_dicts["dwell_durs"]
+    frac_on_vals = data_dicts["frac_on_vals"]
+    traj_lengths = data_dicts["traj_lengths"]
+    n_trajectories = data_dicts["n_trajectories"]
+    n_on_events = data_dicts["n_on_events"]
+    n_off_events = data_dicts["n_off_events"]
+
     subdir = "all_constructs" if group_name == "all" else group_name
     out_dir = COMP_DIR / subdir
     plots_dir = out_dir / "plots"
@@ -207,7 +209,8 @@ def plot_group(group_name, short_names, display_labels):
     # ── Plot 1: ON Episode Duration ──
     fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
     data = [burst_durs.get(c, []) for c in short_names]
-    xlabels = build_xlabels(short_names, display_labels, n_on_events)
+    xlabels = build_xlabels(short_names, display_labels, n_cells,
+                            n_trajectories, n_on_events)
     stats = box_with_points(
         ax, data, display_labels,
         ylabel="Observed ON Episode Duration (min)",
@@ -226,7 +229,8 @@ def plot_group(group_name, short_names, display_labels):
     # ── Plot 2: OFF Episode Duration ──
     fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
     data = [dwell_durs.get(c, []) for c in short_names]
-    xlabels = build_xlabels(short_names, display_labels, n_off_events)
+    xlabels = build_xlabels(short_names, display_labels, n_cells,
+                            n_trajectories, n_off_events)
     stats = box_with_points(
         ax, data, display_labels,
         ylabel="Observed OFF Episode Duration (min)",
@@ -245,7 +249,8 @@ def plot_group(group_name, short_names, display_labels):
     # ── Plot 3: Fraction of Observed Time ON ──
     fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
     data = [frac_on_vals.get(c, []) for c in short_names]
-    xlabels = build_xlabels(short_names, display_labels)
+    xlabels = build_xlabels(short_names, display_labels, n_cells,
+                            n_trajectories)
     stats = box_with_points(
         ax, data, display_labels,
         ylabel="Fraction of Observed Time ON",
@@ -265,7 +270,8 @@ def plot_group(group_name, short_names, display_labels):
     # ── Plot 4: Valid Trajectory Length ──
     fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor="white")
     data = [traj_lengths.get(c, []) for c in short_names]
-    xlabels = build_xlabels(short_names, display_labels)
+    xlabels = build_xlabels(short_names, display_labels, n_cells,
+                            n_trajectories)
     stats = box_with_points(
         ax, data, display_labels,
         ylabel="Valid Trajectory Length (min)",
@@ -286,7 +292,7 @@ def plot_group(group_name, short_names, display_labels):
     stats_df = pd.DataFrame(group_stats_rows)
     stats_path = quant_dir / "pairwise_mannwhitney_stats.csv"
     stats_df.to_csv(stats_path, index=False)
-    print(f"  Pairwise statistics → {stats_path}")
+    print(f"  Pairwise statistics --> {stats_path}")
     print(stats_df)
 
     # ── Summary table ──
@@ -298,7 +304,7 @@ def plot_group(group_name, short_names, display_labels):
         lengths = traj_lengths.get(short, np.array([]))
         summary_rows.append({
             "short_name": short,
-            "n_cells": N_CELLS.get(short, 0),
+            "n_cells": n_cells.get(short, 0),
             "n_trajectories": n_trajectories.get(short, 0),
             "n_on_events": n_on_events.get(short, 0),
             "n_off_events": n_off_events.get(short, 0),
@@ -324,19 +330,53 @@ def plot_group(group_name, short_names, display_labels):
     summary_df = pd.DataFrame(summary_rows)
     summary_path = quant_dir / "summary_table.csv"
     summary_df.to_csv(summary_path, index=False)
-    print(f"  Summary table → {summary_path}")
+    print(f"  Summary table --> {summary_path}")
     print(summary_df)
     return group_stats_rows
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Generate plots for each group
+#  Main entry point
 # ═══════════════════════════════════════════════════════════════════
 
-for group_name, short_names, display_labels in PLOT_GROUPS:
-    print(f"\n{'─' * 60}")
-    print(f"  Group: {group_name}  ({', '.join(display_labels)})")
-    print(f"{'─' * 60}")
-    plot_group(group_name, short_names, display_labels)
+def main():
+    """Load data, generate grouped comparison plots, and save statistics."""
+    COMP_DIR.mkdir(parents=True, exist_ok=True)
 
-print("\nDone.")
+    # Cell counts: read from the summary_table.csv produced by run_analysis.py,
+    # which writes to comparison/run_analysis/quantification/.
+    _summary_path = RESULTS_DIR / "comparison" / "run_analysis" / "quantification" / "summary_table.csv"
+    if _summary_path.exists():
+        _summary_df = pd.read_csv(_summary_path)
+        if "n_cells" in _summary_df.columns and "short_name" in _summary_df.columns:
+            n_cells = dict(zip(_summary_df["short_name"], _summary_df["n_cells"].astype(int)))
+        else:
+            print("WARNING: summary_table.csv missing n_cells or short_name column; cell counts will show 0")
+            n_cells = {}
+        print(f"Cell counts loaded from: {_summary_path}")
+    else:
+        print(f"WARNING: {_summary_path} not found — run run_analysis.py first; cell counts will show 0")
+        n_cells = {}
+
+    print(f"Repo root:   {repo_root}")
+    print(f"Results dir: {RESULTS_DIR}")
+    print(f"Output dir:  {COMP_DIR}")
+    print(f"Constructs:  {CONSTRUCT_ORDER}")
+    print(f"Plot groups: {[g[0] for g in PLOT_GROUPS]}")
+
+    # Load per-construct data
+    data_dicts = _load_construct_data()
+
+    # Generate plots for each group
+    for group_name, short_names, display_labels in PLOT_GROUPS:
+        print(f"\n{'─' * 60}")
+        print(f"  Group: {group_name}  ({', '.join(display_labels)})")
+        print(f"{'─' * 60}")
+        plot_group(group_name, short_names, display_labels, data_dicts,
+                   n_cells)
+
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()

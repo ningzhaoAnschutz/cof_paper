@@ -7,7 +7,6 @@ import sys
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-
 import matplotlib as _mpl
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
@@ -656,7 +655,7 @@ def plot_cell_crop_timecourse_montage(
         When True, each crop is extracted from a temporally averaged
         max-Z projection spanning 3 frames: ``selected_frame-1``,
         ``selected_frame``, and ``selected_frame+1``.  Edge handling:
-        frame 0 → averages [0, 1, 2]; last frame N-1 → averages
+        frame 0 --> averages [0, 1, 2]; last frame N-1 --> averages
         [N-3, N-2, N-1].  This also applies to the merged channel
         row.  Default ``False``.
     projection_cache : dict, optional
