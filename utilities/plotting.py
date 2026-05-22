@@ -8,7 +8,6 @@ This module provides visualization functions for:
 """
 
 from pathlib import Path
-
 import matplotlib as mpl
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt

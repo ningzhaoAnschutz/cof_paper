@@ -18,12 +18,9 @@ Usage in a notebook:
 
 import re
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from .config import REPORTER_PLASMID_NAME_MAPPING
-
 
 def _parse_folder_substring(folder_substring):
     """

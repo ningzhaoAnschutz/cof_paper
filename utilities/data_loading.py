@@ -9,10 +9,8 @@ This module provides functions for:
 
 import re
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from .config import PLASMID_SHORT_NAME_MAPPING, REPORTER_PLASMID_NAME_MAPPING
 
 
