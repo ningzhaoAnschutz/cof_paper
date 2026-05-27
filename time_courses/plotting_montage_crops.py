@@ -567,6 +567,19 @@ def _normalize_channel_crops(snapshot_crops, trajectory_crops, mode: str):
         if not np.isfinite(scale) or scale <= 0:
             scale = 1.0
         return [np.asarray(c, dtype=float) / scale for c in snapshot_crops]
+    if mode == "trajectory_min_max":
+        # Global percentile stretch across the full trajectory — robust to
+        # outlier hot pixels.  Background → black, bright spots → white,
+        # relative intensity changes preserved across time.
+        values = trajectory_crops if trajectory_crops else snapshot_crops
+        all_vals = np.concatenate([np.asarray(c, dtype=float).ravel() for c in values])
+        finite = all_vals[np.isfinite(all_vals)]
+        if finite.size == 0:
+            return [np.zeros_like(c, dtype=float) for c in snapshot_crops]
+        lo, hi = np.percentile(finite, [5, 95])
+        if hi <= lo:
+            hi = lo + 1.0
+        return [np.clip((np.asarray(c, dtype=float) - lo) / (hi - lo), 0, 1) for c in snapshot_crops]
     if mode == "per_channel_percentile":
         stack = np.concatenate([np.asarray(c, dtype=float).ravel() for c in snapshot_crops])
         finite = stack[np.isfinite(stack)]
@@ -586,7 +599,7 @@ def _normalize_channel_crops(snapshot_crops, trajectory_crops, mode: str):
             if finite.size == 0 or np.ptp(finite) == 0:
                 out.append(np.zeros_like(c, dtype=float))
                 continue
-            lo, hi = np.percentile(finite, [1, 99.5])
+            lo, hi = np.percentile(finite, [5, 99.5])
             if hi <= lo:
                 hi = lo + 1.0
             out.append(np.clip((c - lo) / (hi - lo), 0, 1))
@@ -894,17 +907,21 @@ def plot_cell_crop_timecourse_montage(
                 ))
 
         trajectory_crops = []
-        if crop_norm_mode == "trajectory_max":
+        if crop_norm_mode in ("trajectory_max", "trajectory_min_max"):
             valid_coords = particle_df.dropna(subset=["frame", "x", "y"])
+            # For trajectory_min_max, use the same gaussian filter as the
+            # displayed crops so the normalization range matches what's shown.
+            # For trajectory_max, keep raw (gaussian=0) for backward compat.
+            traj_gfv = gaussian_filter_value if crop_norm_mode == "trajectory_min_max" else 0
             for _, row in valid_coords.iterrows():
                 frame = int(row["frame"])
                 if 0 <= frame < n_frames:
-                    # Scaling reference only: keep this raw so trajectory_max
-                    # does not run a full-frame Gaussian on every movie frame.
                     trajectory_crops.append(
                         _extract_crop(
                             image_TZYXC, frame, float(row["y"]), float(row["x"]),
-                            ch_idx, crop_size_px, gaussian_filter_value=0,
+                            ch_idx, crop_size_px,
+                            gaussian_filter_value=traj_gfv,
+                            projection_cache=projection_cache,
                         )
                     )
         normalized_by_channel.append(
@@ -933,12 +950,10 @@ def plot_cell_crop_timecourse_montage(
             rgb_row.append(rgb_for_merge)
             ax.set_axis_off()
             if row_idx == 0 and show_crop_time_labels:
-                # Time label relative to trimmed axis (not original movie)
-                t_label_min = (frame - trim_start) * dt / 60.0
-                label_spacing_min = (trimmed_n / max(n_cols, 1)) * dt / 60.0
-                fmt = ".1f" if label_spacing_min >= 0.1 else ".2f"
+                # Frame number relative to trimmed range
+                frame_label = frame - trim_start
                 ax.set_title(
-                    f"{t_label_min:{fmt}}",
+                    f"{frame_label}",
                     fontsize=crop_time_label_fontsize,
                     pad=crop_time_label_pad,
                     color="black",
@@ -1010,6 +1025,175 @@ def _group_selections_by_loaded_data(
         )
     )
     return [selection for _, selection in indexed]
+
+
+def export_crop_tif(
+    image_TZYXC,
+    tracking_df,
+    particle_id: int,
+    channels: list[dict],
+    crop_size_px: int,
+    output_path,
+    *,
+    gaussian_filter_value: float = 0,
+    max_frames: int | None = None,
+):
+    """Export a uint16 max-Z crop time-series for one particle as a TIF.
+
+    The output is **trimmed** to the particle's valid frame range
+    (first tracked frame → last tracked frame).  Frames inside that
+    range where the particle has no coordinate are zero-filled (black).
+
+    Output shape is ``(T_valid, C, Y, X)`` with ``imagej=True`` and
+    ``axes="TCYX"`` — opens natively in ImageJ with Time and Channel
+    sliders.
+
+    Parameters
+    ----------
+    image_TZYXC : ndarray
+        Full 5-D image stack ``(T, Z, Y, X, C)``.
+    tracking_df : DataFrame
+        Must contain ``particle``, ``frame``, ``x``, ``y`` columns.
+    particle_id : int
+        Particle to extract.
+    channels : list of dict
+        Each dict needs at least ``{"index": int}``.
+    crop_size_px : int
+        Side length of the square crop.
+    output_path : Path or str
+        Destination ``.tif`` file.
+    gaussian_filter_value : float
+        Sigma for optional Gaussian smoothing of each max-Z frame before
+        cropping.  ``0`` keeps raw pixels.
+    max_frames : int or None
+        Truncate the movie to the first N frames.
+
+    Returns
+    -------
+    bool
+        True if the TIF was written, False if skipped (no valid data).
+    """
+    image_TZYXC = np.asarray(image_TZYXC)
+    n_movie_frames = image_TZYXC.shape[0]
+    if max_frames is not None and max_frames > 0:
+        n_movie_frames = min(n_movie_frames, int(max_frames))
+
+    # Build coordinate lookup from tracking data
+    particle_df = tracking_df[tracking_df["particle"] == particle_id]
+    valid_rows = particle_df.dropna(subset=["frame", "x", "y"])
+    coord_lookup: dict[int, tuple[float, float]] = {}
+    for _, row in valid_rows.iterrows():
+        f = int(row["frame"])
+        if 0 <= f < n_movie_frames:
+            coord_lookup[f] = (float(row["x"]), float(row["y"]))
+
+    if not coord_lookup:
+        return False  # no valid data — skip export
+
+    # Trim to valid frame range
+    first_frame = min(coord_lookup.keys())
+    last_frame = max(coord_lookup.keys())
+    n_valid_frames = last_frame - first_frame + 1
+
+    n_ch = len(channels)
+    stack = np.zeros(
+        (n_valid_frames, n_ch, crop_size_px, crop_size_px), dtype=np.float64,
+    )
+    projection_cache: dict = {}
+
+    # For frames inside the valid range without coordinates, use the
+    # nearest available coordinate (up to 2 frames away) for continuity.
+    valid_frame_arr = np.array(sorted(coord_lookup.keys()))
+
+    for t_idx in range(n_valid_frames):
+        t_movie = first_frame + t_idx  # absolute movie frame
+
+        if t_movie in coord_lookup:
+            x, y = coord_lookup[t_movie]
+        else:
+            # Fill internal gap with nearest tracked coordinate
+            distances = np.abs(valid_frame_arr - t_movie)
+            nearest_idx = int(np.argmin(distances))
+            if distances[nearest_idx] <= 2:
+                nearest_frame = int(valid_frame_arr[nearest_idx])
+                x, y = coord_lookup[nearest_frame]
+            else:
+                continue  # leave as zeros (black)
+
+        for ci, ch in enumerate(channels):
+            proj = _full_frame_max_projection(
+                image_TZYXC, t_movie, int(ch["index"]),
+                gaussian_filter_value=gaussian_filter_value,
+                projection_cache=projection_cache,
+            )
+            crop = _crop_from_projection(proj, y, x, crop_size_px)
+            stack[t_idx, ci] = crop
+
+    # Convert to uint16
+    stack = np.clip(stack, 0, 65535).astype(np.uint16)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    ch_labels = [ch.get("label", f"ch{ch['index']}") for ch in channels]
+
+    tifffile.imwrite(
+        str(output_path),
+        stack,
+        imagej=True,
+        metadata={
+            "axes": "TCYX",
+            "Labels": ch_labels,
+            "Info": (
+                f"particle_id={particle_id}  "
+                f"first_frame={first_frame}  "
+                f"last_frame={last_frame}  "
+                f"n_valid_coords={len(coord_lookup)}/{n_valid_frames}"
+            ),
+        },
+    )
+    return True
+
+
+def export_scene_tif(
+    image_TZYXC,
+    output_path,
+    *,
+    max_frames: int | None = None,
+):
+    """Export the full-FOV max-Z projection as a uint16 TIF.
+
+    Output shape is ``(T, C, Y, X)`` — opens in ImageJ with T/C sliders.
+
+    Parameters
+    ----------
+    image_TZYXC : ndarray
+        Full 5-D image stack ``(T, Z, Y, X, C)``.
+    output_path : Path or str
+        Destination ``.tif`` file.
+    max_frames : int or None
+        Truncate the movie to the first N frames.
+    """
+    image_TZYXC = np.asarray(image_TZYXC)
+    if max_frames is not None and max_frames > 0:
+        image_TZYXC = image_TZYXC[:int(max_frames)]
+
+    # Max-Z projection: (T, Z, Y, X, C) → (T, Y, X, C)
+    maxz = np.max(image_TZYXC, axis=1)
+    # Transpose to (T, C, Y, X) for ImageJ
+    maxz = np.moveaxis(maxz, -1, 1)
+
+    maxz = np.clip(maxz, 0, 65535).astype(np.uint16)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tifffile.imwrite(
+        str(output_path),
+        maxz,
+        imagej=True,
+        metadata={"axes": "TCYX"},
+    )
 
 
 def generate_representative_montage_pdf(

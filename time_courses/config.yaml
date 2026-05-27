@@ -23,9 +23,9 @@ data_root: /Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF_long_movies
 #    track_ch: channel index for the nascent protein (used for tracking QC)
 constructs:
   sfGFP:
-    plasmid:  pRS027
-    burst_ch: 0
-    track_ch: 1
+   plasmid:  pRS027
+   burst_ch: 0
+   track_ch: 1
 
   GFPuv:
     plasmid:  pRS032
@@ -33,14 +33,14 @@ constructs:
     track_ch: 1
 
   sfGFP_Xbp1:
-    plasmid:  pRS038
-    burst_ch: 0
-    track_ch: 1
+   plasmid:  pRS038
+   burst_ch: 0
+   track_ch: 1
 
   Xbp1_sfGFP:
-    plasmid:  pRS048
-    burst_ch: 0
-    track_ch: 1
+   plasmid:  pRS048
+   burst_ch: 0
+   track_ch: 1
 
 # ----------------------------------------------------------------------------
 #  Analysis Parameters
@@ -98,22 +98,37 @@ analysis:
   # These control which particles are selected and how the crop montage
   # is generated.  Photobleaching correction is applied to the raw LIF
   # scene before crop extraction (not to the burst matrix).
-  montage_n_particles: 0            # null = all particles
+  montage_n_particles: null            # null = all particles; integer = N longest trajectories
   montage_apply_photobleaching: true   # correct whole-scene before cropping
-  montage_photobleaching_mode: entire_image
-  montage_crop_size_px: 15             # NxN max-Z projected crop
-  montage_gaussian_filter_value: 1.0   # 0 = raw pixels; >0 smooths full max-Z frame
-  montage_n_snapshots: 80              # evenly spaced across movie
-  montage_coordinate_mode: nearest_valid
-  montage_coordinate_max_gap: 2        # frames; beyond = blank crop
-  montage_crop_norm_mode: per_crop_percentile  # high-contrast per-crop stretch
-  montage_crop_colormap: null           # null for per-channel color; "gray" for grayscale
-  montage_trace_norm_mode: raw          # "raw" | "min_max" | "total_intensity"
+  montage_photobleaching_mode: entire_image  # "entire_image" | "roi"
+  montage_crop_size_px: 15             # NxN max-Z projected crop (pixels)
+  montage_gaussian_filter_value: 1.0   # 0 = raw pixels; >0 = Gaussian σ applied to max-Z frame before cropping
+  montage_n_snapshots: 80              # number of evenly spaced crop snapshots across the movie
+  montage_coordinate_mode: nearest_valid  # "nearest_valid" = use closest tracked frame; "exact" = blank if missing
+  montage_coordinate_max_gap: 2        # max frame distance for nearest_valid; beyond → blank crop
+  # ── Crop normalization ──
+  # Controls how pixel intensities in each crop are scaled for display.
+  #   "per_crop_percentile"    — each crop stretched independently (1st–99.8th pctl). Max local contrast.
+  #   "per_channel_percentile" — percentile stretch across all snapshot crops (consistent within snapshots).
+  #   "trajectory_min_max"     — 5th–95th percentile stretch across ALL trajectory frames (consistent over time).
+  #   "trajectory_max"         — each crop ÷ max pixel across trajectory. Dim frames stay dim.
+  #   "raw"                    — no normalization, raw pixel values.
+  montage_crop_norm_mode: per_channel_percentile
+  montage_crop_colormap: null           # null = per-channel color (green/magenta); "gray" = grayscale
+  # ── Trace normalization ──
+  # Controls how the intensity trace (top panel) is scaled.
+  #   "raw"             — absolute intensity values (a.u.)
+  #   "min_max"         — 0–1 scaled per channel
+  #   "total_intensity" — normalized by total intensity across channels
+  montage_trace_norm_mode: raw
   # Vertical layout: [trace, on_off_bar, crop_montage] as proportions.
   montage_section_height_ratios: [0.68, 0.1, 0.22]
-  montage_show_crop_time_labels: true   # false to hide time text above crops
-  montage_trim_to_valid: true           # trim plot to valid data range
-  montage_display_3_crops_averaged: true  # average 3 temporal neighbours
+  montage_show_crop_time_labels: true   # false to hide frame-number labels above crops
+  montage_trim_to_valid: true           # true = trim plot x-axis to valid data range
+  montage_display_3_crops_averaged: true  # true = average 3 temporal neighbours for smoother crops
+  # ── TIF exports ──
+  montage_save_crop_tif: true            # export raw uint16 max-Z crop TIF per trajectory (ImageJ-compatible)
+  montage_save_scene_tif: true           # export raw uint16 max-Z full-scene TIF (deduplicated per FOV)
 
 # ----------------------------------------------------------------------------
 #  Plot Parameters
