@@ -1659,6 +1659,10 @@ def plot_mean_trajectories_all(
 
     out_png = results_folder / "mean_FRAP_trajectories_all.png"
     plt.savefig(out_png, dpi=900, bbox_inches='tight', pad_inches=0.1)
+    # save as svg
+    out_svg = results_folder / "mean_FRAP_trajectories_all.svg"
+    plt.savefig(out_svg, format='svg', bbox_inches='tight', pad_inches=0.1)
+    
     plt.show()
 
     return ax
