@@ -37,6 +37,9 @@ REPORTER_PLASMID_NAME_MAPPING = {
     # Reporter plasmid (Halo-based detection)
     # 'pRS012': 'Halo-reporter',
     # piggybac-Tet-on-anti-HAfb-Halo-IRES-LaG16-tdStayGold
+    "pNZ414" : "4GFPuv(trunc)-2mCh",
+    "pNZ415" : "4sfGFP(trunc)-2mCh",
+
 }
 
 # Short name mapping for individual day naming (based on sfGFP/uvGFP count)
@@ -61,4 +64,6 @@ PLASMID_SHORT_NAME_MAPPING = {
     "pRS084": "4sf-deopt",  # 4 sfGFP (deoptimized)
     "pRS045": "4uv-deopt",  # 4 GFPuv (deoptimized)
     "pNZ381": "0sf",  # 0 sfGFP copies (mCh-only control)
+    "pNZ414" : "4uv-trc",
+    "pNZ415" : "4sf-trc",
 }
