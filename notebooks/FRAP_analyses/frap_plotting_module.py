@@ -1662,7 +1662,7 @@ def plot_mean_trajectories_all(
     # save as svg
     out_svg = results_folder / "mean_FRAP_trajectories_all.svg"
     plt.savefig(out_svg, format='svg', bbox_inches='tight', pad_inches=0.1)
-    
+
     plt.show()
 
     return ax
@@ -1779,6 +1779,11 @@ def plot_box_swarm_final_values(
     file_name = f"box_swarm_{selected_field}.png"
     file_path = results_folder.joinpath(file_name)
     plt.savefig(file_path, dpi=900, bbox_inches='tight', pad_inches=0.1)
+    # save as svg
+    svg_name = f"box_swarm_{selected_field}.svg"
+    svg_path = results_folder.joinpath(svg_name)
+    plt.savefig(svg_path, format='svg', bbox_inches='tight', pad_inches=0.1)
+    
     plt.show()
 
     return ax
