@@ -464,6 +464,7 @@ def call_bursts(
     matrix_for_thresholding,
     raw_matrix=None,
     processed_matrix=None,
+    precomputed_binary_matrix=None,
     trajectory_ids=None,
     time_interval_seconds=5.0,
     threshold=0.05,
@@ -488,6 +489,10 @@ def call_bursts(
 
     Parameters
     ----------
+    precomputed_binary_matrix : ndarray or None
+        When ``threshold_mode='ml'``, supply the ML-classified binary
+        matrix here.  Must match shape of *matrix_for_thresholding*.
+        The per-row threshold loop is skipped entirely.
     max_nan_bridge : int
         Maximum NaN gap (frames) to bridge between same-state neighbours.
         Set to 0 to disable bridging.
@@ -512,50 +517,66 @@ def call_bursts(
     threshold_sources = np.full(n_traces, "", dtype=object)
 
     # Step 1: Apply threshold
-    for i in range(n_traces):
-        row = matrix_for_thresholding[i]
-        finite = np.isfinite(row)
-        if threshold_mode == "normalized_absolute":
-            threshold_values[i] = float(threshold)
-            threshold_sources[i] = "normalized"
-            binary_matrix[i, finite] = (row[finite] >= threshold_values[i]).astype(float)
-        elif threshold_mode == "fraction_of_trace_max":
-            proc_row = processed_matrix[i]
-            compare_mask = finite & np.isfinite(proc_row)
-            if not np.any(compare_mask):
-                continue
-            thresh_val = threshold * np.nanmax(proc_row[compare_mask])
-            threshold_values[i] = float(thresh_val)
-            threshold_sources[i] = "processed"
-            binary_matrix[i, compare_mask] = (proc_row[compare_mask] >= thresh_val).astype(float)
-        elif threshold_mode == "absolute_raw":
-            raw_row = raw_matrix[i]
-            compare_mask = finite & np.isfinite(raw_row)
-            threshold_values[i] = float(threshold)
-            threshold_sources[i] = "raw"
-            binary_matrix[i, compare_mask] = (raw_row[compare_mask] >= threshold_values[i]).astype(float)
-        elif threshold_mode == "off_baseline_mad":
-            # Goldman-style: bar = OFF-baseline + k * MAD_off, computed
-            # from the processed (smoothed) trace. `threshold` is k.
-            proc_row = processed_matrix[i]
-            compare_mask = finite & np.isfinite(proc_row)
-            bar = _off_baseline_bar(proc_row[compare_mask], threshold, off_baseline_quantile)
-            if not np.isfinite(bar):
-                continue  # leave row as all-NaN; downstream stats skip it
-            threshold_values[i] = float(bar)
-            threshold_sources[i] = "processed"
-            binary_matrix[i, compare_mask] = (proc_row[compare_mask] >= bar).astype(float)
-        elif threshold_mode == "snr":
-            # SNR is already a self-normalized quality metric.
-            # matrix_for_thresholding contains per-frame SNR values;
-            # threshold is the SNR cutoff (e.g. 3.0).
-            snr_row = matrix_for_thresholding[i]
-            compare_mask = finite & np.isfinite(snr_row)
-            threshold_values[i] = float(threshold)
-            threshold_sources[i] = "snr"
-            binary_matrix[i, compare_mask] = (snr_row[compare_mask] >= threshold).astype(float)
-        else:
-            raise ValueError(f"Unknown threshold_mode: {threshold_mode}")
+    if threshold_mode == "ml":
+        # ── ML pre-loop path: binary matrix computed externally ──
+        if precomputed_binary_matrix is None:
+            raise ValueError(
+                "threshold_mode='ml' requires precomputed_binary_matrix"
+            )
+        if precomputed_binary_matrix.shape != binary_matrix.shape:
+            raise ValueError(
+                f"precomputed_binary_matrix shape {precomputed_binary_matrix.shape} "
+                f"does not match expected {binary_matrix.shape}"
+            )
+        binary_matrix = precomputed_binary_matrix.copy()
+        threshold_values[:] = threshold   # record ML threshold (e.g. 0.51)
+        threshold_sources[:] = "ml"
+    else:
+        # ── Normal per-row thresholding loop (SNR and other modes) ──
+        for i in range(n_traces):
+            row = matrix_for_thresholding[i]
+            finite = np.isfinite(row)
+            if threshold_mode == "normalized_absolute":
+                threshold_values[i] = float(threshold)
+                threshold_sources[i] = "normalized"
+                binary_matrix[i, finite] = (row[finite] >= threshold_values[i]).astype(float)
+            elif threshold_mode == "fraction_of_trace_max":
+                proc_row = processed_matrix[i]
+                compare_mask = finite & np.isfinite(proc_row)
+                if not np.any(compare_mask):
+                    continue
+                thresh_val = threshold * np.nanmax(proc_row[compare_mask])
+                threshold_values[i] = float(thresh_val)
+                threshold_sources[i] = "processed"
+                binary_matrix[i, compare_mask] = (proc_row[compare_mask] >= thresh_val).astype(float)
+            elif threshold_mode == "absolute_raw":
+                raw_row = raw_matrix[i]
+                compare_mask = finite & np.isfinite(raw_row)
+                threshold_values[i] = float(threshold)
+                threshold_sources[i] = "raw"
+                binary_matrix[i, compare_mask] = (raw_row[compare_mask] >= threshold_values[i]).astype(float)
+            elif threshold_mode == "off_baseline_mad":
+                # Goldman-style: bar = OFF-baseline + k * MAD_off, computed
+                # from the processed (smoothed) trace. `threshold` is k.
+                proc_row = processed_matrix[i]
+                compare_mask = finite & np.isfinite(proc_row)
+                bar = _off_baseline_bar(proc_row[compare_mask], threshold, off_baseline_quantile)
+                if not np.isfinite(bar):
+                    continue  # leave row as all-NaN; downstream stats skip it
+                threshold_values[i] = float(bar)
+                threshold_sources[i] = "processed"
+                binary_matrix[i, compare_mask] = (proc_row[compare_mask] >= bar).astype(float)
+            elif threshold_mode == "snr":
+                # SNR is already a self-normalized quality metric.
+                # matrix_for_thresholding contains per-frame SNR values;
+                # threshold is the SNR cutoff (e.g. 3.0).
+                snr_row = matrix_for_thresholding[i]
+                compare_mask = finite & np.isfinite(snr_row)
+                threshold_values[i] = float(threshold)
+                threshold_sources[i] = "snr"
+                binary_matrix[i, compare_mask] = (snr_row[compare_mask] >= threshold).astype(float)
+            else:
+                raise ValueError(f"Unknown threshold_mode: {threshold_mode}")
 
     # Step 2: Event cleanup — merge short non-NaN runs into the longer
     # adjacent non-NaN neighbour. Iterate until no short runs remain.
@@ -944,6 +965,159 @@ def plot_dual_channel_kymograph_from_matrix(
     return fig
 
 
+def plot_ml_state_kymograph(
+    binary_matrix,
+    ch1_matrix=None,
+    *,
+    output_dir=None,
+    time_interval_seconds=5.0,
+    condition="",
+    sort_by="fraction_on",
+    trajectory_summary=None,
+    max_traces_to_plot=None,
+    figsize=(14, 6),
+    dpi=300,
+    show=False,
+    filename_stem="kymograph_ml_state",
+):
+    """Render an ML classification state kymograph.
+
+    Colour key
+    ----------
+    - **Magenta** (1,0,1)  — nascent-only (folding channel OFF).
+    - **Green**   (0,1,0)  — folding-only (nascent OFF or absent).
+    - **White**   (1,1,1)  — colocalized (both channels ON).
+    - **Black**   (0,0,0)  — both absent or NaN.
+
+    Parameters
+    ----------
+    binary_matrix : ndarray (N, T)
+        ML-classified binary state matrix (1=ON, 0=OFF, NaN=missing).
+    ch1_matrix : ndarray (N, T), optional
+        Nascent channel binary state.  If *None*, the kymograph shows
+        a 2-colour ON/OFF map (green ON, black OFF) without nascent overlay.
+    output_dir : Path, optional
+        Directory to save the figure.
+    sort_by : str
+        ``"fraction_on"`` or ``"density"``.
+    trajectory_summary : DataFrame, optional
+        Needed when *sort_by="fraction_on"*.
+
+    Returns
+    -------
+    fig : Figure
+    """
+    bin_ch0 = np.asarray(binary_matrix, dtype=float)
+    N, T = bin_ch0.shape
+    if N == 0:
+        raise ValueError("No trajectories to plot")
+
+    # ── Build nascent presence from ch1 if provided ──
+    # The nascent channel (ch1) is the TRACKING channel: if a trajectory
+    # has a finite intensity value at a given frame, the nascent protein
+    # is present by definition (that's what the tracker detected).
+    # No intensity threshold is needed — presence = finite value.
+    if ch1_matrix is not None:
+        ch1 = np.asarray(ch1_matrix, dtype=float)
+        bin_ch1 = np.where(np.isfinite(ch1), 1.0, np.nan)
+    else:
+        bin_ch1 = None
+
+    # ── sorting ──
+    if sort_by == "fraction_on" and trajectory_summary is not None:
+        sort_idx = np.argsort(
+            trajectory_summary["fraction_time_on"].values
+        )[::-1]
+    elif sort_by == "density":
+        density = np.sum(np.isfinite(bin_ch0), axis=1)
+        sort_idx = np.argsort(-density)
+    else:
+        sort_idx = np.arange(N)
+
+    if max_traces_to_plot is not None and len(sort_idx) > max_traces_to_plot:
+        sort_idx = sort_idx[:max_traces_to_plot]
+
+    bin_ch0 = bin_ch0[sort_idx]
+    if bin_ch1 is not None:
+        # Pad if shapes differ
+        if bin_ch1.shape[1] != T:
+            padded = np.full((bin_ch1.shape[0], T), np.nan)
+            cols = min(bin_ch1.shape[1], T)
+            padded[:, :cols] = bin_ch1[:, :cols]
+            bin_ch1 = padded
+        bin_ch1 = bin_ch1[sort_idx[:bin_ch1.shape[0]]]
+    H = bin_ch0.shape[0]
+
+    # ── build RGB image ──
+    # Colour logic:
+    #   folding ON  + nascent ON  → White (1,1,1)
+    #   folding ON  + nascent OFF → Green (0,1,0)
+    #   folding OFF + nascent ON  → Magenta (1,0,1)
+    #   folding OFF + nascent OFF → Black (0,0,0)
+    #   NaN                       → Dark grey (0.15,0.15,0.15)
+    img = np.full((H, T, 3), 0.0, dtype=float)
+
+    # NaN mask
+    nan_mask = np.isnan(bin_ch0)
+    img[nan_mask] = [0.15, 0.15, 0.15]
+
+    fold_on = (~nan_mask) & (bin_ch0 == 1.0)
+    fold_off = (~nan_mask) & (bin_ch0 == 0.0)
+
+    if bin_ch1 is not None and bin_ch1.shape[0] >= H:
+        nasc_on = np.isfinite(bin_ch1[:H]) & (bin_ch1[:H] == 1.0)
+        nasc_off = np.isfinite(bin_ch1[:H]) & (bin_ch1[:H] == 0.0)
+        nasc_nan = np.isnan(bin_ch1[:H])
+
+        # White: both ON
+        both_on = fold_on & nasc_on
+        img[both_on] = [1.0, 1.0, 1.0]
+
+        # Green: folding ON, nascent OFF or NaN
+        green = fold_on & ~nasc_on
+        img[green] = [0.0, 1.0, 0.0]
+
+        # Magenta: folding OFF, nascent ON
+        magenta = fold_off & nasc_on
+        img[magenta] = [1.0, 0.0, 1.0]
+
+        # Black: both OFF (already black from init)
+    else:
+        # No nascent channel → simple green/black
+        img[fold_on] = [0.0, 1.0, 0.0]
+
+    # ── time axis ──
+    dt = float(time_interval_seconds)
+    t_max_min = (T - 1) * dt / 60.0
+
+    # ── plot ──
+    set_publication_style()
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi, facecolor="white")
+    ax.imshow(
+        img, aspect="auto", interpolation="nearest", origin="upper",
+        extent=[0, t_max_min, H, 0],
+    )
+    ax.set_xlabel("Time (min)")
+    ax.set_ylabel("Trajectory (sorted)")
+    ax.set_title(
+        f"{condition} - ML Classification Kymograph"
+        if condition else "ML Classification Kymograph"
+    )
+    style_axes(ax, grid=False)
+    fig.tight_layout()
+
+    if output_dir is not None:
+        plots_dir = Path(output_dir) / "plots" / "quality_control"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        save_figure(fig, plots_dir / filename_stem, dpi)
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    return fig
+
 def plot_burst_results(
     raw_matrix,
     processed_matrix,
@@ -1088,6 +1262,9 @@ def run_burst_quantification(
     input_path=None,
     input_matrix=None,
     snr_matrix=None,
+    external_binary_matrix=None,
+    external_score_matrix=None,
+    external_metadata=None,
     output_dir="burst_results",
     time_interval_seconds=5.0,
     condition="",
@@ -1161,6 +1338,14 @@ def run_burst_quantification(
         snr_matrix = np.asarray(snr_matrix, dtype=float)
         snr_matrix = snr_matrix[valid_rows][:, col_slice]
 
+    # Apply same row/col filtering to external ML matrices
+    if external_binary_matrix is not None:
+        external_binary_matrix = np.asarray(external_binary_matrix, dtype=float)
+        external_binary_matrix = external_binary_matrix[valid_rows][:, col_slice]
+    if external_score_matrix is not None:
+        external_score_matrix = np.asarray(external_score_matrix, dtype=float)
+        external_score_matrix = external_score_matrix[valid_rows][:, col_slice]
+
     # 3. Preprocess
     processed_matrix, qc_table, kept_ids = preprocess_intensity_matrix(
         raw_matrix, trajectory_ids,
@@ -1192,6 +1377,8 @@ def run_burst_quantification(
                 "timestamp": datetime.now().isoformat(),
                 "note": "No trajectories passed QC.",
             }
+            if external_metadata:
+                zero_params.update(external_metadata)
             with open(quant_dir / "params.json", "w") as f:
                 json.dump(zero_params, f, indent=2)
             qc_table.to_csv(quant_dir / "qc_table.csv", index=False)
@@ -1213,6 +1400,20 @@ def run_burst_quantification(
             f"SNR/raw shape mismatch after QC: {snr_kept.shape} vs {raw_kept.shape}"
         )
 
+    # Filter external ML matrices to match kept rows
+    ext_binary_kept = None
+    ext_score_kept = None
+    if external_binary_matrix is not None:
+        ext_binary_kept = external_binary_matrix[keep_idx]
+        # Mask by intensity validity: no ML evidence where raw is NaN
+        ext_binary_kept[~np.isfinite(raw_kept)] = np.nan
+        assert ext_binary_kept.shape == raw_kept.shape, (
+            f"ML binary/raw shape mismatch after QC: {ext_binary_kept.shape} vs {raw_kept.shape}"
+        )
+    if external_score_matrix is not None:
+        ext_score_kept = external_score_matrix[keep_idx]
+        ext_score_kept[~np.isfinite(raw_kept)] = np.nan
+
     # 4. Normalize
     normalized_matrix = normalize_matrix(
         processed_matrix, method=normalization_method,
@@ -1221,6 +1422,7 @@ def run_burst_quantification(
 
     # 5. Call bursts
     # When threshold_mode="snr", threshold the SNR matrix directly;
+    # when threshold_mode="ml", use the precomputed ML binary;
     # otherwise threshold the normalized intensity matrix.
     if threshold_mode == "snr" and snr_kept is not None:
         thresholding_matrix = snr_kept
@@ -1237,6 +1439,7 @@ def run_burst_quantification(
         matrix_for_thresholding=thresholding_matrix,
         raw_matrix=raw_kept,
         processed_matrix=processed_matrix,
+        precomputed_binary_matrix=ext_binary_kept,
         trajectory_ids=kept_ids,
         time_interval_seconds=time_interval_seconds,
         threshold=threshold,
@@ -1295,6 +1498,9 @@ def run_burst_quantification(
                            "folding-channel ON/OFF episodes, not direct "
                            "measurements of translational initiation.",
     }
+    # Merge ML provenance if provided
+    if external_metadata:
+        params.update(external_metadata)
 
     # Save
     if save_intermediates:
@@ -1308,6 +1514,12 @@ def run_burst_quantification(
         np.save(quant_dir / "processed_matrix.npy", processed_matrix)
         np.save(quant_dir / "normalized_matrix.npy", normalized_matrix)
         np.save(quant_dir / "binary_matrix.npy", binary_matrix)
+        # Save ML intermediates if available
+        if ext_score_kept is not None:
+            np.save(quant_dir / "ml_score_matrix.npy", ext_score_kept)
+        if ext_binary_kept is not None:
+            # ml_binary_raw = the ML matrix before event cleanup
+            np.save(quant_dir / "ml_binary_raw.npy", ext_binary_kept)
         print(f"  Saved outputs to {quant_dir}")
 
     # Plot

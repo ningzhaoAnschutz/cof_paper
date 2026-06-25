@@ -283,6 +283,142 @@ def extract_intensity_and_shift_data(dataframe, selected_field='spot_int_ch_0',
     return intensity_array_shifted
 
 
+def filter_long_trajectories(intensity_array, max_trajectory_length_percentile=None,
+                             verbose=True):
+    """Remove trajectories whose length exceeds a percentile threshold.
+
+    "Length" = number of finite (non-NaN) frames per trajectory row,
+    measured after SNR filtering, shift, and concatenation.
+
+    Parameters
+    ----------
+    intensity_array : ndarray
+        2-D array (n_trajectories, n_timepoints). NaN = missing frame.
+    max_trajectory_length_percentile : float or None
+        Percentile threshold (0-100). Trajectories with more finite frames
+        than ``np.percentile(lengths, pct)`` are removed.
+        None or >= 100 disables the filter.
+    verbose : bool
+        Print diagnostics.
+
+    Returns
+    -------
+    filtered_array : ndarray
+        Array with long trajectories removed.
+    keep_mask : ndarray of bool
+        Boolean mask (True = kept) of length n_trajectories.
+    """
+    if (max_trajectory_length_percentile is None
+            or max_trajectory_length_percentile >= 100
+            or intensity_array.shape[0] == 0):
+        return intensity_array, np.ones(intensity_array.shape[0], dtype=bool)
+
+    lengths = np.sum(np.isfinite(intensity_array), axis=1)
+    cutoff = np.percentile(lengths, max_trajectory_length_percentile)
+    keep_mask = lengths <= cutoff
+
+    if verbose:
+        n_total = intensity_array.shape[0]
+        n_removed = int(np.sum(~keep_mask))
+        print(f"  Trajectory-length filter (≤ P{max_trajectory_length_percentile:.0f} = "
+              f"{cutoff:.0f} frames): {n_total} → "
+              f"{n_total - n_removed} trajectories (removed {n_removed})")
+        if n_removed > 0:
+            removed_lengths = lengths[~keep_mask]
+            print(f"    Removed trajectory lengths: min={int(removed_lengths.min())}, "
+                  f"max={int(removed_lengths.max())}, "
+                  f"median={int(np.median(removed_lengths))}")
+
+    return intensity_array[keep_mask], keep_mask
+
+
+def plot_trajectory_coverage(primary_data, step_size_in_sec=5,
+                             dataset_name='', color='steelblue',
+                             save_path=None, figsize=(4.5, 2.5),
+                             show_plot=True, ax=None):
+    """Plot the number of trajectories with valid (finite) data at each frame.
+
+    This diagnostic reveals how statistical power decreases at long lag times:
+    the ACF at lag τ can only use trajectories that have data at both frame t
+    and frame t+τ, so the effective sample size drops as τ grows.
+
+    Parameters
+    ----------
+    primary_data : ndarray, shape (n_traj, n_frames)
+        Intensity array (NaN = missing frame).
+    step_size_in_sec : float
+        Time interval between frames, in seconds.
+    dataset_name : str
+        Label for the plot title.
+    color : str
+        Fill color for the coverage area.
+    save_path : str or Path or None
+        If provided, save the figure (without extension — .png is appended).
+    figsize : tuple
+        Figure size in inches.
+    show_plot : bool
+        Whether to display the figure.
+    ax : matplotlib Axes or None
+        If provided, plot into this axes instead of creating a new figure.
+
+    Returns
+    -------
+    fig : matplotlib Figure or None
+        The figure object (None if an external ax was provided).
+    coverage : ndarray, shape (n_frames,)
+        Number of valid trajectories at each frame.
+    """
+    import matplotlib.pyplot as plt
+
+    n_traj, n_frames = primary_data.shape
+    # Count finite values per column (frame)
+    coverage = np.sum(np.isfinite(primary_data), axis=0)
+    time_axis = np.arange(n_frames) * step_size_in_sec
+
+    own_fig = ax is None
+    if own_fig:
+        fig, ax = plt.subplots(1, 1, figsize=figsize, dpi=150)
+    else:
+        fig = None
+
+    ax.fill_between(time_axis, coverage, alpha=0.35, color=color, linewidth=0)
+    ax.plot(time_axis, coverage, color=color, linewidth=1.2)
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('N trajectories with data')
+    ax.set_title(f'{dataset_name} — trajectory coverage' if dataset_name else 'Trajectory coverage',
+                 fontsize=9)
+    ax.set_xlim(0, time_axis[-1])
+    ax.set_ylim(0, None)
+
+    # Annotate key stats
+    ax.axhline(n_traj, color='gray', linestyle='--', linewidth=0.7, alpha=0.6)
+    ax.text(time_axis[-1] * 0.02, n_traj * 0.95, f'total = {n_traj}',
+            fontsize=7, color='gray', va='top')
+
+    # Mark where coverage drops below 50% and 25%
+    for frac, ls in [(0.5, ':'), (0.25, '-.')]:
+        threshold = int(n_traj * frac)
+        below = np.where(coverage < threshold)[0]
+        if len(below) > 0:
+            t_drop = time_axis[below[0]]
+            ax.axvline(t_drop, color='crimson', linestyle=ls, linewidth=0.7, alpha=0.6)
+            ax.text(t_drop + time_axis[-1] * 0.01, n_traj * (frac + 0.05),
+                    f'<{int(frac*100)}% @ {t_drop:.0f}s', fontsize=6,
+                    color='crimson', va='bottom')
+
+    if own_fig:
+        fig.tight_layout()
+        if save_path is not None:
+            fig.savefig(f'{save_path}.png', dpi=200, bbox_inches='tight')
+            print(f'  Saved: {Path(save_path).name}.png')
+        if show_plot:
+            plt.show()
+        else:
+            plt.close(fig)
+
+    return fig, coverage
+
+
 def extract_dual_channel_data(dataframe, primary_field, secondary_field, 
                               min_percentage_data_in_trajectory=0.3, shift_data=False,
                               max_missing_frames=5, min_snr=1, maximum_columns=360, 
@@ -513,7 +649,8 @@ def _find_tracking_files(root_folder: Path, dataframe_prefix: str = 'tracking_')
 
 def load_tracking_data(root_folder: Path, selected_field: str, 
                       min_percentage_data_in_trajectory=0.3, dataframe_prefix='tracking_',
-                      min_snr=1, max_missing_frames=5, smooth_window=1, verbose=True):
+                      min_snr=1, max_missing_frames=5, smooth_window=1, verbose=True,
+                      max_trajectory_length_percentile=None):
     """
     Load and process all tracking CSV files found in subfolders whose names include 'results_'.
     
@@ -535,6 +672,11 @@ def load_tracking_data(root_folder: Path, selected_field: str,
         Smoothing window size
     verbose : bool
         Print progress messages
+    max_trajectory_length_percentile : float or None
+        Percentile threshold (0-100) for removing extra-long trajectories
+        (likely aggregates). Trajectories with more finite frames than
+        ``np.percentile(lengths, pct)`` are removed after concatenation.
+        None or >= 100 disables the filter.
     
     Returns
     -------
@@ -616,6 +758,23 @@ def load_tracking_data(root_folder: Path, selected_field: str,
     concatenated_intensity_arrays = np.concatenate(intensity_arrays, axis=0)
     cell_id_per_trajectory        = np.concatenate(cell_id_arrays,   axis=0)
     total_number_of_spots = np.shape(concatenated_intensity_arrays)[0]
+    
+    # Apply upper-bound trajectory-length filter (aggregate removal)
+    concatenated_intensity_arrays, length_mask = filter_long_trajectories(
+        concatenated_intensity_arrays,
+        max_trajectory_length_percentile=max_trajectory_length_percentile,
+        verbose=verbose,
+    )
+    cell_id_per_trajectory = cell_id_per_trajectory[length_mask]
+    n_after_length_filter = concatenated_intensity_arrays.shape[0]
+    
+    # Guard: raise if filter removed everything
+    if n_after_length_filter == 0:
+        raise ValueError(
+            f"All {total_number_of_spots} trajectories were removed by the "
+            f"trajectory-length filter (max_trajectory_length_percentile="
+            f"{max_trajectory_length_percentile}). Consider raising the percentile."
+        )
     
     return concatenated_intensity_arrays, number_of_cells, total_number_of_spots, cell_id_per_trajectory
 
@@ -707,6 +866,8 @@ def compute_autocorrelation_for_dataset(
     plot_individual_trajectories =False,
     detrend_photobleaching=False,
     de_correlation_threshold=0.001,
+    # Aggregate removal
+    max_trajectory_length_percentile=None,  # None = no filter, 99 = remove top 1%
     # Simulation mode parameters
     simulation_mode=False,  # Enable simulation mode
     SSA_data=None,  # Simulated data array (n_trajectories, n_timepoints)
@@ -852,7 +1013,8 @@ def compute_autocorrelation_for_dataset(
                 smooth_window=smooth_window,
                 min_snr=min_snr,
                 max_missing_frames=max_missing_frames,
-                verbose=verbose
+                verbose=verbose,
+                max_trajectory_length_percentile=max_trajectory_length_percentile,
             )
             primary_data = array_int_all_days
         
@@ -1014,7 +1176,9 @@ def compute_autocorrelation_for_dataset(
             'plot_name': plot_name_data,
             'df': df,
             'dataset': ds,
-            'data_source': 'simulation' if simulation_mode else 'experimental'
+            'data_source': 'simulation' if simulation_mode else 'experimental',
+            'max_trajectory_length_percentile': max_trajectory_length_percentile,
+            'primary_data': primary_data,  # (n_traj, n_frames) for quality diagnostics
         }
     
     # ===== HANDLE SINGLE OR MULTIPLE DATASETS =====
@@ -1051,7 +1215,8 @@ def load_dual_channel_tracking_data(
     min_snr=1,
     max_missing_frames=5, 
     verbose=True, 
-    smooth_window=1
+    smooth_window=1,
+    max_trajectory_length_percentile=None,
 ):
     """
     Load and process dual-channel tracking data ensuring synchronized trajectories.
@@ -1180,6 +1345,22 @@ def load_dual_channel_tracking_data(
     primary_concatenated = np.concatenate(primary_arrays, axis=0)
     secondary_concatenated = np.concatenate(secondary_arrays, axis=0)
     
+    # Apply upper-bound trajectory-length filter (aggregate removal)
+    # Use primary channel lengths to compute the cutoff, apply same mask to both
+    _, length_mask = filter_long_trajectories(
+        primary_concatenated,
+        max_trajectory_length_percentile=max_trajectory_length_percentile,
+        verbose=verbose,
+    )
+    primary_concatenated = primary_concatenated[length_mask]
+    secondary_concatenated = secondary_concatenated[length_mask]
+    
+    if primary_concatenated.shape[0] == 0:
+        raise ValueError(
+            f"All trajectories removed by trajectory-length filter "
+            f"(max_trajectory_length_percentile={max_trajectory_length_percentile})."
+        )
+    
     if verbose:
         print(f"\n=== SUMMARY ===")
         print(f"Files processed: {total_files_processed}/{len(tracking_files)}")
@@ -1230,6 +1411,8 @@ def compute_cross_correlation_for_dataset(
     SSA_data_1=None,
     SSA_data_2=None,
     detrend=True,
+    # Aggregate removal
+    max_trajectory_length_percentile=None,
 ):
     """
     Compute cross-correlation function (CCF) for experimental or simulated dual-channel data.
@@ -1407,7 +1590,8 @@ def compute_cross_correlation_for_dataset(
                 smooth_window=smooth_window,
                 verbose=verbose,
                 primary_channel=primary_channel,
-                secondary_channel=secondary_channel
+                secondary_channel=secondary_channel,
+                max_trajectory_length_percentile=max_trajectory_length_percentile,
             )
             total_number_of_spots = primary_data.shape[0]
             
@@ -2508,6 +2692,7 @@ def analyze_dual_channel_time_courses(
     max_missing_frames=5,
     min_snr=1,
     smooth_window=1,
+    max_trajectory_length_percentile=None,
     control_spots_mode=False,
     downsample=False,
     # Time course plotting parameters
@@ -2739,7 +2924,8 @@ def analyze_dual_channel_time_courses(
             min_snr=min_snr,
             max_missing_frames=max_missing_frames,
             verbose=verbose,
-            smooth_window=1  # No extra smoothing during loading
+            smooth_window=1,  # No extra smoothing during loading
+            max_trajectory_length_percentile=max_trajectory_length_percentile,
         )
         
         if verbose:
@@ -3040,6 +3226,7 @@ def plot_dual_channel_kymograph(
     max_missing_frames=3,
     min_snr=1,
     smooth_window=1,
+    max_trajectory_length_percentile=None,
     selected_indices=None,
     orientation="rows=trajectories",
     normalize="per_trace_percentile",
@@ -3262,7 +3449,8 @@ def plot_dual_channel_kymograph(
                 min_percentage_data_in_trajectory=min_percentage_data_in_trajectory,
                 dataframe_prefix=dataframe_prefix, min_snr=min_snr,
                 max_missing_frames=max_missing_frames, smooth_window=smooth_window,
-                verbose=verbose
+                verbose=verbose,
+                max_trajectory_length_percentile=max_trajectory_length_percentile,
             )
         except Exception as e:
             raise RuntimeError(f"Failed to load dual-channel data: {e}")

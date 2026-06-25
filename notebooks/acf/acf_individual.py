@@ -30,8 +30,9 @@ if sys.prefix != MICROLIVE_ENV:
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
-import matplotlib.pyplot as plt
 import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for terminal execution
+import matplotlib.pyplot as plt
 
 current_dir = Path(__file__).resolve().parent
 
@@ -40,7 +41,9 @@ sys.path.insert(0, str(current_dir.parent / 'autocorrelations'))
 
 from microlive.imports import *
 from microlive import microscopy as mi
-from pipeline_time_courses import compute_autocorrelation_for_dataset, compute_kinetics_from_acf
+from pipeline_time_courses import (compute_autocorrelation_for_dataset,
+                                    compute_kinetics_from_acf,
+                                    plot_trajectory_coverage)
 
 # ── Global plot style ─────────────────────────────────────────────────────────
 plt.rcParams.update({
@@ -70,14 +73,14 @@ output_dir.mkdir(exist_ok=True)
 # ============================================================
 # DATASET PATHS
 # ============================================================
-data_folder_sf         = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/sfGFP/results')
-data_folder_uv         = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/GFPuv/results')
-data_folder_end_xbp1   = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/pRS038/results')
-data_folder_start_xbp1 = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/pRS048/results')
+data_folder_sf         = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF_long_movies/sfGFP/results')
+data_folder_uv         = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF_long_movies/GFPuv/results')
+data_folder_end_xbp1   = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF_long_movies/sfGFP_Xbp1/results')
+data_folder_start_xbp1 = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF_long_movies/Xbp1_sfGFP/results')
 
-list_datasets = [data_folder_sf, data_folder_uv, data_folder_end_xbp1, data_folder_start_xbp1]
-list_names    = ['sfGFP', 'GFPuv', 'sfGFP_ex', 'sfGFP_sx']
-list_colors   = ['gray', 'tab:orange', 'tab:blue', 'tab:purple']
+list_datasets = [data_folder_sf, data_folder_uv]
+list_names    = ['sfGFP', 'GFPuv']
+list_colors   = ['gray', 'tab:orange']
 
 # ============================================================
 # SHARED ACF PARAMETERS
@@ -86,23 +89,28 @@ step_size_in_sec                  = 5
 start_lag                         = 1
 channel_index                     = 1
 selected_field                    = 'spot_int_ch_'
-min_percentage_data_in_trajectory = 0.3
+min_percentage_data_in_trajectory = 0.4
 max_missing_frames                = 1
 downsample                        = False
 downsampling_factor               = 3
 control_spots_mode                = False
 use_global_mean                   = False
 MAD_THRESHOLD_FACTOR              = 4
-multi_tau_raw_points              = 60
+multi_tau_raw_points              = 80
 multi_tau_bins_per_stage          = 16
 min_snr                           = 1
 smooth_window                     = 1
-remove_outliers                   = False
+remove_outliers                   = True
+max_trajectory_length_percentile  = 99    # remove trajectories longer than 99th percentile
 correct_baseline                  = True
 multi_tau                         = True
 max_lag                           = 240        # 240 × 5s = 1200s
-x_axes_min_max_list_values        = [-10, 1000]
-y_axes_min_max_list_values        = [-0.02, 0.04]
+x_axes_min_max_list_values        = [-10, 1200]
+# Y-axis limits for individual plots (set per dataset name, or fallback to default)
+y_axes_min_max_list_values        = {
+    'sfGFP':  [-0.04, 0.06],
+    'GFPuv':  [-0.08, 0.08]
+}
 fit_type                          = 'exponential'
 de_correlation_threshold          = 0.001
 use_linear_projection_for_lag_0   = True
@@ -113,7 +121,7 @@ gen_length_half_HA                = 1659        # codons
 X_MAX_PLOT = x_axes_min_max_list_values[1]
 
 # Show individual per-trajectory ACF curves behind the mean?
-PLOT_INDIVIDUAL_TRACES = True
+PLOT_INDIVIDUAL_TRACES = False
 
 # Per-trajectory exponential photobleaching detrend before ACF?
 DETREND_PHOTOBLEACHING = False
@@ -231,7 +239,7 @@ def compute_kinetics_heaviside(hfit, mean_corr, gene_length,
 # ============================================================
 def _setup_acf_axes(ax, lags, mean_corr, std_corr, color, n_cells, n_traces,
                     name, model_label, x_max,
-                    correlations_array=None, show_individual=False):
+                    correlations_array=None, show_individual=False, y_lim=None):
     """Draw ACF data + SEM band and style the axes. Returns taus_fit array."""
     mask = lags > 0  # plot all positive lags; set_xlim clips visually
 
@@ -254,6 +262,8 @@ def _setup_acf_axes(ax, lags, mean_corr, std_corr, color, n_cells, n_traces,
     ax.set_ylabel('G(τ)')
     ax.set_xlim(0, x_max)
     ax.set_xticks(np.arange(0, x_max + 1, 200))
+    if y_lim is not None:
+        ax.set_ylim(y_lim)
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_color('black')
@@ -278,7 +288,7 @@ def _save_and_close(fig, ax, output_path):
 # ============================================================
 def plot_exponential_acf(result, kin_exp, name, color,
                          output_path, x_max=X_MAX_PLOT,
-                         show_individual=False):
+                         show_individual=False, y_lim=None):
     """Plot ACF data with the exponential fit overlay only."""
     lags      = np.array(result['lags'])
     mean_corr = np.array(result['mean_correlation'])
@@ -292,7 +302,7 @@ def plot_exponential_acf(result, kin_exp, name, color,
     taus_fit = _setup_acf_axes(ax, lags, mean_corr, std_corr, color,
                                n_cells, n_traces, name, 'Exponential', x_max,
                                correlations_array=corr_arr,
-                               show_individual=show_individual)
+                               show_individual=show_individual, y_lim=y_lim)
 
     if fit_exp is not None:
         A  = fit_exp['A']
@@ -318,7 +328,7 @@ def plot_exponential_acf(result, kin_exp, name, color,
 # ============================================================
 def plot_heaviside_acf(result, hfit, kin_hev, name, color,
                        output_path, x_max=X_MAX_PLOT,
-                       show_individual=False):
+                       show_individual=False, y_lim=None):
     """Plot ACF data with the Heaviside fit overlay only."""
     lags      = np.array(result['lags'])
     mean_corr = np.array(result['mean_correlation'])
@@ -331,7 +341,7 @@ def plot_heaviside_acf(result, hfit, kin_hev, name, color,
     taus_fit = _setup_acf_axes(ax, lags, mean_corr, std_corr, color,
                                n_cells, n_traces, name, 'Heaviside', x_max,
                                correlations_array=corr_arr,
-                               show_individual=show_individual)
+                               show_individual=show_individual, y_lim=y_lim)
 
     if hfit is not None:
         G_hev = heaviside_acf_model(taus_fit, hfit['A'], hfit['T'], hfit['C'])
@@ -399,11 +409,12 @@ for data_folder, name, color in zip(list_datasets, list_names, list_colors):
         show_plot                        = False,
         figsize                          = (3.2, 2.2),
         detrend_photobleaching           = DETREND_PHOTOBLEACHING,
+        max_trajectory_length_percentile = max_trajectory_length_percentile,
     )
     all_results.append(r)
 
     # ── Exponential kinetics (existing) ────────────────────────────────
-    kin_exp = compute_kinetics_from_acf(r, gene_length=gen_length_half_HA)
+    kin_exp = compute_kinetics_from_acf(r, gene_length=gene_length)
 
     # ── Heaviside / Larson 2011 fit ───────────────────────────────────
     lags_arr = np.array(r['lags'])
@@ -413,27 +424,56 @@ for data_folder, name, color in zip(list_datasets, list_names, list_colors):
     kin_hev = None
     if hfit is not None:
         kin_hev = compute_kinetics_heaviside(
-            hfit, mc_arr, gene_length=gen_length_half_HA)
+            hfit, mc_arr, gene_length=gene_length)
         print(f'  Heaviside fit:  T = {hfit["T"]:.1f} ± {hfit["T_err"]:.1f} s,  '
-              f'ke = {kin_hev["ke"]:.2f} aa/s,  ki = {kin_hev["ki"]:.4f} 1/s')
+              f'ke = {kin_hev["ke"]:.2f} aa/s,  ki = {kin_hev["ki"]:.4f} 1/s,  '
+              f'R = {kin_hev["n_ribosomes"]:.1f} rib,  density = {kin_hev["ribosomal_density"]:.1f}%')
         print(f'  Exponential fit: T_dwell = {kin_exp["dwell_time"]:.1f} s  '
               f'(2·τ_c = 2×{kin_exp["tau_c"]:.1f}),  '
-              f'ke = {kin_exp["ke"]:.2f} aa/s,  ki = {kin_exp["ki"]:.4f} 1/s')
+              f'ke = {kin_exp["ke"]:.2f} aa/s,  ki = {kin_exp["ki"]:.4f} 1/s,  '
+              f'R = {kin_exp["n_ribosomes"]:.1f} rib,  density = {kin_exp["ribosomal_density"]:.1f}%')
     else:
         print(f'  Heaviside fit: FAILED')
         print(f'  Exponential fit: T_dwell = {kin_exp["dwell_time"]:.1f} s,  '
-              f'ke = {kin_exp["ke"]:.2f} aa/s')
+              f'ke = {kin_exp["ke"]:.2f} aa/s,  ki = {kin_exp["ki"]:.4f} 1/s,  '
+              f'R = {kin_exp["n_ribosomes"]:.1f} rib,  density = {kin_exp["ribosomal_density"]:.1f}%')
+
+    # ── Y-limit selection ──────────────────────────────────────────────
+    if isinstance(y_axes_min_max_list_values, dict):
+        y_lim = y_axes_min_max_list_values.get(name, None)
+    else:
+        y_lim = y_axes_min_max_list_values
+
+    if y_lim is None:
+        # Dynamic fallback: focus on mean curve with 100% padding
+        mask = lags_arr > 0
+        ymin_mean = np.min(mc_arr[mask])
+        ymax_mean = np.max(mc_arr[mask])
+        mean_range = ymax_mean - ymin_mean
+        y_lim = [ymin_mean - 1.0 * mean_range, ymax_mean + 1.0 * mean_range]
 
     # ── Plot 1: Exponential fit ─────────────────────────────────────────
     plot_exp_path = output_dir / f'ACF_{name}_ch{channel_index}_exponential'
     plot_exponential_acf(r, kin_exp, name, color, plot_exp_path,
-                         show_individual=PLOT_INDIVIDUAL_TRACES)
+                         show_individual=PLOT_INDIVIDUAL_TRACES, y_lim=y_lim)
 
     # ── Plot 2: Heaviside fit ─────────────────────────────────────────
     if hfit is not None and kin_hev is not None:
         plot_hev_path = output_dir / f'ACF_{name}_ch{channel_index}_heaviside'
         plot_heaviside_acf(r, hfit, kin_hev, name, color, plot_hev_path,
-                           show_individual=PLOT_INDIVIDUAL_TRACES)
+                           show_individual=PLOT_INDIVIDUAL_TRACES, y_lim=y_lim)
+
+    # ── Plot 3: Trajectory coverage (quality diagnostic) ─────────────
+    if 'primary_data' in r:
+        cov_path = output_dir / f'coverage_{name}_ch{channel_index}'
+        plot_trajectory_coverage(
+            r['primary_data'],
+            step_size_in_sec=step_size_in_sec,
+            dataset_name=name,
+            color=color,
+            save_path=cov_path,
+            show_plot=False,
+        )
 
     # ── Collect row for CSV ────────────────────────────────────────────
     row = {
@@ -449,21 +489,28 @@ for data_folder, name, color in zip(list_datasets, list_names, list_colors):
         'exp_dwell_time_s':        kin_exp['dwell_time'],
         'exp_ke':                  kin_exp['ke'],
         'exp_ki':                  kin_exp['ki'],
+        'exp_ribosomal_density':   kin_exp['ribosomal_density'],
+        'exp_n_ribosomes':         kin_exp['n_ribosomes'],
+        'exp_ribosomal_distance':  kin_exp['ribosomal_distance'],
     }
     # --- Heaviside model ---
     if kin_hev is not None:
         row.update({
-            'hev_A':              hfit['A'],
-            'hev_T_s':            hfit['T'],
-            'hev_T_err_s':        hfit['T_err'],
-            'hev_C':              hfit['C'],
-            'hev_ke':             kin_hev['ke'],
-            'hev_ki':             kin_hev['ki'],
+            'hev_A':                  hfit['A'],
+            'hev_T_s':                hfit['T'],
+            'hev_T_err_s':            hfit['T_err'],
+            'hev_C':                  hfit['C'],
+            'hev_ke':                 kin_hev['ke'],
+            'hev_ki':                 kin_hev['ki'],
+            'hev_ribosomal_density':  kin_hev['ribosomal_density'],
+            'hev_n_ribosomes':        kin_hev['n_ribosomes'],
+            'hev_ribosomal_distance': kin_hev['ribosomal_distance'],
         })
     else:
         row.update({
             'hev_A': None, 'hev_T_s': None, 'hev_T_err_s': None,
             'hev_C': None, 'hev_ke': None, 'hev_ki': None,
+            'hev_ribosomal_density': None, 'hev_n_ribosomes': None, 'hev_ribosomal_distance': None,
         })
     kinetics_rows.append(row)
 

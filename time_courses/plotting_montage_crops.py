@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 import sys
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 local_microlive = repo_root.parent / "microlive"
-if local_microlive.exists():
+if os.environ.get("COF_USE_LOCAL_MICROLIVE", "") == "1" and local_microlive.exists():
     sys.path.insert(0, str(local_microlive))
 
 from microlive import microscopy as mi

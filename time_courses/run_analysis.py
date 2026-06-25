@@ -28,6 +28,7 @@ Note:
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import yaml
@@ -38,7 +39,7 @@ import numpy as np
 import pandas as pd
 
 local_microlive = Path(__file__).resolve().parent.parent.parent / "microlive"
-if local_microlive.exists():
+if os.environ.get("COF_USE_LOCAL_MICROLIVE", "") == "1" and local_microlive.exists():
     sys.path.insert(0, str(local_microlive))
 
 from microlive import microscopy as mi
@@ -52,14 +53,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # time_courses/
 from utilities.config import REPORTER_PLASMID_NAME_MAPPING, PLASMID_SHORT_NAME_MAPPING
 from burst_quantification import (
     plot_dual_channel_kymograph_from_matrix,
+    plot_ml_state_kymograph,
     run_burst_quantification,
 )
 from plotting_montage_crops import (
+    DEFAULT_CHANNELS,
     ParticleOrigin,
+    export_crop_tif,
+    export_scene_tif,
     generate_representative_montage_pdf,
+    load_montage_data_cached,
     parse_metadata_txt,
     resolve_lif_path,
 )
+from ml_classification import classify_trajectories_ml
 
 from plotting import (
     TRACE_BLUE,
@@ -686,23 +693,75 @@ def run_per_construct_analysis():
             json.dumps(provenance, indent=2)
         )
 
-        # Run burst quantification
-        result = run_burst_quantification(
-            input_matrix=matrix_ch0,
-            snr_matrix=snr_ch0,
-            output_dir=output_dir,
-            condition=full,
-            **{k: v for k, v in PARAMS.items()
-               if k not in ("min_snr", "snr_channel_index",
-                            "max_total_internal_nan_frames",
-                            "min_valid_frames",
-                            "max_frames",
-                            "align_first_valid")
-               and not k.startswith("montage_")},
-            align_first_valid=False,  # already aligned by _shift_pair_by_reference
-            **{k: v for k, v in PLOT_PARAMS.items()
-               if not k.startswith("montage_") and k not in ("use_bh_fdr",)},
+        # ── Resolve ML channel (null → burst_ch, but 0 is valid) ──
+        ml_threshold = PARAMS.get("ml_threshold", 0.51)
+        ml_ch = PARAMS.get("ml_channel")
+        if ml_ch is None:
+            ml_ch = burst_ch
+
+        # ── Build kwargs common to both ML and SNR paths ──
+        _EXCLUDED_BURST_KEYS = (
+            "min_snr", "snr_channel_index",
+            "max_total_internal_nan_frames",
+            "min_valid_frames",
+            "max_frames",
+            "align_first_valid",
         )
+
+        if PARAMS["threshold_mode"] == "ml":
+            # ── ML classification: build binary matrix from image crops ──
+            ml_binary, ml_scores_mat, ml_metadata = classify_trajectories_ml(
+                origins,
+                n_shifted_columns=matrix_ch0.shape[1],
+                data_root=DATA_ROOT,
+                construct_name=construct_name,
+                burst_ch=ml_ch,
+                crop_size_px=PARAMS.get("ml_crop_size_px", 15),
+                ml_threshold=ml_threshold,
+                gaussian_filter_value=PARAMS.get("ml_gaussian_filter_value", 0),
+                max_frames=PARAMS.get("max_frames"),
+                apply_photobleaching=PARAMS.get("ml_apply_photobleaching", True),
+                photobleaching_mode=PARAMS.get("ml_photobleaching_mode", "entire_image"),
+            )
+
+            # Build burst kwargs: strip ml_* keys and force ML threshold/mode
+            burst_kwargs = {
+                k: v for k, v in PARAMS.items()
+                if k not in _EXCLUDED_BURST_KEYS
+                and not k.startswith("montage_")
+                and not k.startswith("ml_")
+            }
+            burst_kwargs["threshold_mode"] = "ml"
+            burst_kwargs["threshold"] = ml_threshold  # NOT the SNR 3.0
+
+            result = run_burst_quantification(
+                input_matrix=matrix_ch0,
+                snr_matrix=snr_ch0,
+                external_binary_matrix=ml_binary,
+                external_score_matrix=ml_scores_mat,
+                external_metadata=ml_metadata,
+                output_dir=output_dir,
+                condition=full,
+                align_first_valid=False,
+                **burst_kwargs,
+                **{k: v for k, v in PLOT_PARAMS.items()
+                   if not k.startswith("montage_") and k not in ("use_bh_fdr",)},
+            )
+        else:
+            # ── SNR path (existing, unchanged) ──
+            result = run_burst_quantification(
+                input_matrix=matrix_ch0,
+                snr_matrix=snr_ch0,
+                output_dir=output_dir,
+                condition=full,
+                **{k: v for k, v in PARAMS.items()
+                   if k not in _EXCLUDED_BURST_KEYS
+                   and not k.startswith("montage_")
+                   and not k.startswith("ml_")},
+                align_first_valid=False,  # already aligned by _shift_pair_by_reference
+                **{k: v for k, v in PLOT_PARAMS.items()
+                   if not k.startswith("montage_") and k not in ("use_bh_fdr",)},
+            )
 
         all_results[short] = {
             "burst": result,
@@ -722,6 +781,34 @@ def run_per_construct_analysis():
                   f"mean fraction ON: {mean_frac:.3f}")
         else:
             print("  WARNING: No trajectories passed QC")
+
+        # ── Provenance table: map every QC-passing trajectory to its source image ──
+        # trajectory_id = "traj_N" → N = row index in origins[] (post Stage 1-2
+        # filtering, pre Stage 3 burst QC).  This table lets the user trace
+        # any final trajectory back to the exact LIF file, scene, and particle.
+        if not ts.empty:
+            prov_rows = []
+            for _, row in ts.iterrows():
+                tid = str(row["trajectory_id"])
+                origin_idx = int(tid.removeprefix("traj_"))
+                if origin_idx < len(origins):
+                    o = origins[origin_idx]
+                    prov_rows.append({
+                        "trajectory_id": tid,
+                        "trajectory_index": int(row["trajectory_index"]),
+                        "lif_file": o.lif_path.name,
+                        "series_index": o.series_index,
+                        "particle_id": o.particle_id,
+                        "first_valid_frame": o.first_valid_frame,
+                        "total_frames_movie": o.total_frames_movie,
+                        "results_dir": o.results_dir.name,
+                        "construct": short,
+                    })
+            if prov_rows:
+                prov_df = pd.DataFrame(prov_rows)
+                prov_path = quant_dir / "trajectory_provenance.csv"
+                prov_df.to_csv(prov_path, index=False)
+                print(f"  Provenance table: {len(prov_df)} trajectories → {prov_path}")
 
 
 
@@ -846,6 +933,37 @@ def run_per_construct_analysis():
                 print(f"  OK: SNR dual-channel kymograph saved ({n_rows_snr} QC-passed trajectories)")
         except Exception as e:
             print(f"  WARNING: SNR dual-channel kymograph skipped: {e}")
+
+        # ── ML classification state kymograph ──
+        if PARAMS["threshold_mode"] == "ml" and result["binary_matrix"].size > 0:
+            try:
+                binary_kept = result["binary_matrix"]
+                # Use ch1 (nascent) for colocalization overlay
+                if keep_idx.size > 0 and keep_idx.max() < matrix_ch1_raw.shape[0]:
+                    ch1_kept_ml = matrix_ch1_raw[keep_idx]
+                    ch1_kept_ml = _pad_columns_to_reference(
+                        binary_kept, ch1_kept_ml
+                    )
+                    n_rows_ml = min(binary_kept.shape[0], ch1_kept_ml.shape[0])
+                else:
+                    ch1_kept_ml = None
+                    n_rows_ml = binary_kept.shape[0]
+
+                plot_ml_state_kymograph(
+                    binary_matrix=binary_kept[:n_rows_ml],
+                    ch1_matrix=ch1_kept_ml[:n_rows_ml] if ch1_kept_ml is not None else None,
+                    output_dir=output_dir,
+                    time_interval_seconds=PARAMS["time_interval_seconds"],
+                    condition=full,
+                    sort_by=PLOT_PARAMS.get("kymograph_sort_by", "density"),
+                    trajectory_summary=result["trajectory_summary"].iloc[:n_rows_ml],
+                    max_traces_to_plot=PLOT_PARAMS.get("max_traces_to_plot", None),
+                    figsize=PLOT_PARAMS.get("kymograph_figsize", (8.5, 4.2)),
+                    dpi=PLOT_PARAMS.get("kymograph_dpi", 300),
+                )
+                print(f"  OK: ML state kymograph saved ({n_rows_ml} trajectories)")
+            except Exception as e:
+                print(f"  WARNING: ML state kymograph skipped: {e}")
 
     return all_results
 
@@ -1099,6 +1217,69 @@ def generate_representative_montages(all_results):
                 f"for {short}: {e}"
             )
 
+        # ── TIF exports (crop and/or full-scene max-Z projections) ──
+        save_crop_tif  = PARAMS.get("montage_save_crop_tif", False)
+        save_scene_tif = PARAMS.get("montage_save_scene_tif", False)
+
+        if save_crop_tif or save_scene_tif:
+            tif_dir = entry["output_dir"] / "plots" / "tif_exports"
+            crop_tif_dir = tif_dir / "crops"
+            scene_tif_dir = tif_dir / "scenes"
+            saved_scenes: set[tuple[str, int]] = set()  # dedup key
+
+            for selection in selections:
+                origin = selection["origin"]
+                traj_id = selection.get("trajectory_id", "trajectory")
+
+                try:
+                    data = load_montage_data_cached(
+                        origin,
+                        apply_photobleaching=apply_pb,
+                        photobleaching_mode=pb_mode,
+                        max_frames=max_frames,
+                        verbose=False,
+                    )
+
+                    # ── Crop TIF: one file per trajectory ──
+                    if save_crop_tif:
+                        crop_path = crop_tif_dir / f"{traj_id}.tif"
+                        export_crop_tif(
+                            image_TZYXC=data["image_TZYXC"],
+                            tracking_df=data["tracking_df"],
+                            particle_id=origin.particle_id,
+                            channels=DEFAULT_CHANNELS,
+                            crop_size_px=crop_size_px,
+                            output_path=crop_path,
+                            gaussian_filter_value=0,  # raw uint16 — no smoothing
+                            max_frames=max_frames,
+                        )
+
+                    # ── Scene TIF: one file per unique (lif, series) ──
+                    if save_scene_tif:
+                        scene_key = (str(origin.lif_path), int(origin.series_index))
+                        if scene_key not in saved_scenes:
+                            safe_lif = origin.lif_path.stem.replace(" ", "_")
+                            scene_path = (
+                                scene_tif_dir
+                                / f"{safe_lif}_scene{origin.series_index}_maxZ.tif"
+                            )
+                            export_scene_tif(
+                                image_TZYXC=data["image_TZYXC"],
+                                output_path=scene_path,
+                                max_frames=max_frames,
+                            )
+                            saved_scenes.add(scene_key)
+
+                except Exception as e:
+                    print(f"    WARNING: TIF export failed for {traj_id}: {e}")
+
+            n_crops = len(list(crop_tif_dir.glob("*.tif"))) if crop_tif_dir.exists() else 0
+            n_scenes = len(saved_scenes)
+            if save_crop_tif:
+                print(f"    Crop TIFs: {n_crops} files → {crop_tif_dir}")
+            if save_scene_tif:
+                print(f"    Scene TIFs: {n_scenes} unique FOVs → {scene_tif_dir}")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # STEP 3 — CROSS-CONSTRUCT COMPARISON
@@ -1344,16 +1525,22 @@ def main():
         print("  Please mount the external drive and try again.")
         sys.exit(1)
 
-    # ── Build output directory from the SNR threshold in PARAMS ──
-    snr_val = PARAMS["threshold"]
-    # Format: results_snr_3 for 3.0, results_snr_2,_5 for 2.5, etc.
-    snr_str = str(snr_val).replace(".", ",_") if snr_val != int(snr_val) else str(int(snr_val))
-    output_dir_name = f"results_snr_{snr_str}"
+    # ── Build output directory from threshold mode and value ──
+    tmode = PARAMS["threshold_mode"]
+    if tmode == "ml":
+        thresh_val = PARAMS.get("ml_threshold", 0.51)
+        thresh_str = str(thresh_val).replace(".", "_") if thresh_val != int(thresh_val) else str(int(thresh_val))
+        output_dir_name = f"results_ml_{thresh_str}"
+    else:
+        snr_val = PARAMS["threshold"]
+        # Format: results_snr_3 for 3.0, results_snr_2_5 for 2.5, etc.
+        thresh_str = str(snr_val).replace(".", "_") if snr_val != int(snr_val) else str(int(snr_val))
+        output_dir_name = f"results_snr_{thresh_str}"
 
     OUTPUT_ROOT = repo_root / "time_courses" / output_dir_name
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n  SNR threshold = {snr_val}  -->  {output_dir_name}/")
+    print(f"\n  {tmode.upper()} threshold = {thresh_val if tmode == 'ml' else snr_val}  -->  {output_dir_name}/")
     print("=" * 70)
 
     # Step 1: Detrend diagnostic

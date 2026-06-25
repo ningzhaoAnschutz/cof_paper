@@ -37,8 +37,9 @@ if sys.prefix != MICROLIVE_ENV:
 # --- Third-party imports (safe after env check) ---
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for terminal execution
+import matplotlib.pyplot as plt
 import joblib
 from joblib import Parallel, delayed
 from scipy.optimize import curve_fit
@@ -93,8 +94,8 @@ FIT_MODEL = 'heaviside'
 # list_names    = ['sfGFP', 'GFPuv', 'sfGFP_ex', 'sfGFP_sx']
 # list_colors   = ['gray', 'tab:orange', 'tab:blue', 'tab:purple']
 
-data_folder_sf         = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/sfGFP/results')
-data_folder_uv         = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF AC/GFPuv/results')
+data_folder_sf         = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF_long_movies/sfGFP/results')
+data_folder_uv         = Path('/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF_long_movies/GFPuv/results')
 
 list_datasets = [data_folder_sf, data_folder_uv]
 list_names    = ['sfGFP', 'GFPuv']
@@ -118,7 +119,7 @@ multi_tau_raw_points              = 60
 multi_tau_bins_per_stage          = 16
 min_snr                           = 0.5
 smooth_window                     = 1
-remove_outliers                   = False
+remove_outliers                   = True
 correct_baseline                  = True
 multi_tau                         = True
 x_axes_min_max_list_values        = [-10, 1000]
@@ -126,14 +127,16 @@ y_axes_min_max_list_values        = [-0.02, 0.04]
 fit_type                          = 'exponential'
 de_correlation_threshold          = 0.001
 use_linear_projection_for_lag_0   = True
-DETREND_PHOTOBLEACHING            = True   # per-trajectory exponential detrend
+DETREND_PHOTOBLEACHING            = False   # per-trajectory exponential detrend
+max_trajectory_length_percentile  = None  # None = no filter, 99 = remove top 1%
 gene_length                       = 1826       # codons
 gen_length_half_HA                = 1659        # codons
 
 # ============================================================
 # OUTPUT DIRECTORY (dynamic: includes model + MAD)
 # ============================================================
-output_dir = current_dir / f'results_sensitivity_{FIT_MODEL}_mad_{MAD_THRESHOLD_FACTOR}_detrend_{DETREND_PHOTOBLEACHING}_out_{remove_outliers}'
+_pct_tag = f'_pct_{max_trajectory_length_percentile}' if max_trajectory_length_percentile is not None else ''
+output_dir = current_dir / f'results_sensitivity_{FIT_MODEL}_mad_{MAD_THRESHOLD_FACTOR}_detrend_{DETREND_PHOTOBLEACHING}_out_{remove_outliers}{_pct_tag}'
 output_dir.mkdir(exist_ok=True)
 print(f"\n★  Output directory: {output_dir.name}")
 print(f"★  Fit model:        {FIT_MODEL}")
@@ -288,6 +291,9 @@ def run_correlation_for_lag(primary_data, ml, cell_ids, n_cells):
                 'ki': kin['ki'],
                 'tau_c': kin['tau_c'],
                 'dwell_time': kin['dwell_time'],
+                'ribosomal_density': kin['ribosomal_density'],
+                'n_ribosomes': kin['n_ribosomes'],
+                'ribosomal_distance': kin['ribosomal_distance'],
                 'n_traces': n_traces,
                 'n_cells': n_cells_final,
             }
@@ -336,6 +342,9 @@ def run_correlation_for_lag(primary_data, ml, cell_ids, n_cells):
                 'ki': kin['ki'],
                 'tau_c': kin['tau_c'],
                 'dwell_time': kin['dwell_time'],
+                'ribosomal_density': kin['ribosomal_density'],
+                'n_ribosomes': kin['n_ribosomes'],
+                'ribosomal_distance': kin['ribosomal_distance'],
                 'n_traces': n_traces,
                 'n_cells': n_cells_final,
             }
@@ -377,6 +386,7 @@ for data_folder, name, color in zip(list_datasets, list_names, list_colors):
                 min_snr=min_snr,
                 max_missing_frames=max_missing_frames,
                 verbose=False,
+                max_trajectory_length_percentile=max_trajectory_length_percentile,
             )
         except Exception as e:
             print(f'    Data loading FAILED: {e}')
@@ -384,7 +394,9 @@ for data_folder, name, color in zip(list_datasets, list_names, list_colors):
                 all_sweep_rows.append({
                     'dataset': name, 'min_pct': min_pct, 'max_lag': int(ml),
                     'ke': np.nan, 'ki': np.nan, 'tau_c': np.nan,
-                    'dwell_time': np.nan, 'n_traces': 0, 'n_cells': 0,
+                    'dwell_time': np.nan, 'ribosomal_density': np.nan,
+                    'n_ribosomes': np.nan, 'ribosomal_distance': np.nan,
+                    'n_traces': 0, 'n_cells': 0,
                 })
             continue
 
@@ -410,7 +422,9 @@ for data_folder, name, color in zip(list_datasets, list_names, list_colors):
                 all_sweep_rows.append({
                     'dataset': name, 'min_pct': min_pct, 'max_lag': int(ml),
                     'ke': np.nan, 'ki': np.nan, 'tau_c': np.nan,
-                    'dwell_time': np.nan, 'n_traces': 0, 'n_cells': 0,
+                    'dwell_time': np.nan, 'ribosomal_density': np.nan,
+                    'n_ribosomes': np.nan, 'ribosomal_distance': np.nan,
+                    'n_traces': 0, 'n_cells': 0,
                 })
 
         ke_vals = [r['ke'] for r in results_for_row if r is not None]

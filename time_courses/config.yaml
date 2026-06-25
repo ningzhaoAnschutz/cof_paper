@@ -5,8 +5,8 @@
 #      python run_analysis.py                  # uses ./config.yaml
 #      python run_analysis.py --config alt.yaml
 #
-#  The output folder is auto-generated from analysis.threshold
-#  (e.g. results_snr_3/), so different thresholds produce different folders.
+#  The output folder is auto-generated from the threshold mode and value
+#  (e.g. results_snr_3/ or results_ml_0_51/).
 # ============================================================================
 
 # ----------------------------------------------------------------------------
@@ -81,12 +81,26 @@ analysis:
   percentile_high: 95
 
   # ── Burst module: thresholding ──
-  # SNR-based ON/OFF: frames with per-frame SNR (folding ch) >= threshold
-  # are ON.  SNR is self-normalised by local noise, so the same cutoff
-  # works across constructs with different absolute brightness.
-  threshold_mode: snr
-  threshold: 3.0                       # SNR cutoff (standard microscopy detection)
-  off_baseline_quantile: 0.5           # unused in snr mode, kept for reference
+  # "snr" — per-frame SNR on folding channel >= threshold → ON.
+  #   SNR is self-normalised by local noise, so the same cutoff
+  #   works across constructs with different absolute brightness.
+  # "ml"  — MicroLive CNN classifies per-frame max-Z crops → ON/OFF.
+  #   Uses the ParticleDetectionCNN from microlive.ml_spot_detection.
+  threshold_mode: ml
+  threshold: 3.0                       # SNR cutoff (used when threshold_mode=snr)
+
+  # ── ML classification (used when threshold_mode=ml) ──
+  # The CNN applies a double-sigmoid (sigmoid in forward + sigmoid in predict_crops),
+  # so ml_threshold=0.51 refers to the compressed score scale, not raw probability.
+  ml_threshold: 0.51                    # MicroLive legacy compressed score cutoff (validated default)
+  ml_channel: null                     # null = use burst_ch; integer = override channel
+  ml_crop_size_px: 15                  # crop side length (resized to 64×64 internally by CNN)
+  ml_projection_mode: max_z            # "max_z" (only supported mode)
+  ml_gaussian_filter_value: 0          # σ for Gaussian smoothing before cropping (0 = raw)
+  ml_apply_photobleaching: true        # correct scene before crop extraction
+  ml_photobleaching_mode: entire_image # "entire_image" | "roi"
+
+  off_baseline_quantile: 0.5           # unused in snr/ml mode, kept for reference
 
   # ── Burst module: event cleanup ──
   min_event_duration_frames: 3
@@ -127,8 +141,8 @@ analysis:
   montage_trim_to_valid: true           # true = trim plot x-axis to valid data range
   montage_display_3_crops_averaged: true  # true = average 3 temporal neighbours for smoother crops
   # ── TIF exports ──
-  montage_save_crop_tif: true            # export raw uint16 max-Z crop TIF per trajectory (ImageJ-compatible)
-  montage_save_scene_tif: true           # export raw uint16 max-Z full-scene TIF (deduplicated per FOV)
+  montage_save_crop_tif: false            # export raw uint16 max-Z crop TIF per trajectory (ImageJ-compatible)
+  montage_save_scene_tif: false           # export raw uint16 max-Z full-scene TIF (deduplicated per FOV)
 
 # ----------------------------------------------------------------------------
 #  Plot Parameters
@@ -156,6 +170,6 @@ plots:
   montage_panels_per_page: 2           # panels per PDF page
   montage_panel_figsize: [16, 5.75]    # [width, height_per_panel] in inches
   montage_pdf_dpi: 300
-  montage_save_individual_montages: true   # also export each montage as PNG+SVG
-  montage_save_combined_pdf: false         # export multi-page combined PDF
+  montage_save_individual_montages: true    # also export each montage as PNG+SVG
+  montage_save_combined_pdf: false          # export multi-page combined PDF
 

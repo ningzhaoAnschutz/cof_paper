@@ -1,6 +1,6 @@
 # Burst Quantification Pipeline
 
-Quantifies translational bursting dynamics from single-trajectory fluorescence intensity time courses. Processes the **folding channel (ch0)** from dual-channel live-cell imaging data across four CoF constructs.
+Quantifies translational bursting dynamics from single-trajectory fluorescence intensity time courses. Processes the **folding channel (ch0)** from dual-channel live-cell imaging data across four CoF constructs. Supports two classification modes: **SNR-based thresholding** (per-frame signal-to-noise ratio) and **ML-based classification** (MicroLive CNN crop classifier applied frame-by-frame).
 
 ![Pipeline Overview](../diagrams_methods/folding_states_methodology.png)
 
@@ -17,6 +17,7 @@ time_courses/
 │   # Burst quantification pipeline (active, current paper figures)
 ├── run_analysis.py                        # entry point: runs 4 constructs end-to-end
 ├── burst_quantification.py                # core module + CLI + sanity tests
+├── ml_classification.py                   # ML-based frame-level ON/OFF classification (MicroLive CNN)
 ├── comparison_plots.py                    # cross-construct comparison plots (fast rerun from CSVs)
 ├── plotting_montage_crops.py              # representative cell-crop montage PDFs
 ├── plotting.py                            # shared publication styling & stats helpers
@@ -28,11 +29,12 @@ time_courses/
 | File | Purpose |
 |------|---------|
 | `run_analysis.py` | **Entry point** — processes 4 CoF constructs end-to-end with cross-construct comparison |
-| `burst_quantification.py` | **Core module** — loading, QC, preprocessing, normalization, burst calling, dual-channel kymograph, and CLI |
+| `burst_quantification.py` | **Core module** — loading, QC, preprocessing, normalization, burst calling, dual-channel kymograph, ML state kymograph, and CLI |
+| `ml_classification.py` | **ML classification** — frame-level ON/OFF classification using MicroLive's `ParticleDetectionCNN`. Extracts per-frame max-Z crops, classifies each independently, and returns binary + score matrices with full provenance metadata |
 | `comparison_plots.py` | **Comparison re-runner** — regenerates the cross-construct box-with-swarm comparison plots and MW U statistics directly from saved CSVs |
 | `plotting_montage_crops.py` | Generates representative cell-crop montage PDFs with intensity traces, ON/OFF state bars, and thumbnail crops |
 | `plotting.py` | Shared publication plotting style, figure saving, and comparison statistics helpers |
-| `config.yaml` | YAML configuration file defining the thresholds, QC limits, and plotting layout parameters |
+| `config.yaml` | YAML configuration file defining the thresholds, QC limits, ML settings, and plotting layout parameters |
 
 ---
 
@@ -87,15 +89,29 @@ not this normalized matrix:
 
 $$\hat{I}_i(t) = \frac{I_i(t) - P_5}{P_{95} - P_5} \quad \text{clipped to } [0, 1]$$
 
-### Stage 4: Thresholding -- Binary ON/OFF
+### Stage 4: Thresholding — Binary ON/OFF
 
-Each per-trace intensity is converted to a binary ON/OFF call using one of five threshold modes (see [Threshold Modes](#threshold-modes) below). The **active method** for this paper is `snr`:
+Each per-trace intensity is converted to a binary ON/OFF call using one of six threshold modes (see [Threshold Modes](#threshold-modes) below). The pipeline supports two primary methods:
 
-**`snr`** (active default) — per-frame SNR thresholding:
+**`snr`** — per-frame SNR thresholding:
 
 $$B_i(t) = \begin{cases} 1 \text{ (ON)} & \text{if } \text{SNR}_i(t) \geq \theta \\ 0 \text{ (OFF)} & \text{otherwise} \end{cases}$$
 
-with $\theta = 3.5$. SNR is a self-normalized quality metric computed during spot detection (signal / local noise), so the same cutoff applies uniformly across constructs with different absolute brightness. Requires an SNR matrix to be provided alongside the intensity matrix.
+with $\theta = 3.0$. SNR is a self-normalized quality metric computed during spot detection (signal / local noise), so the same cutoff applies uniformly across constructs with different absolute brightness. Requires an SNR matrix to be provided alongside the intensity matrix.
+
+**`ml`** — MicroLive CNN classification:
+
+Uses MicroLive's `ParticleDetectionCNN` to classify per-frame max-Z crops of the folding channel as "spot present" (ON) or "not present" (OFF):
+
+$$B_i(t) = \begin{cases} 1 \text{ (ON)} & \text{if } \sigma(\sigma(\text{CNN}(\text{crop}_{i,t}))) \geq \theta_{\text{ML}} \\ 0 \text{ (OFF)} & \text{otherwise} \end{cases}$$
+
+with $\theta_{\text{ML}} = 0.51$ (double-sigmoid scale). Each frame of each trajectory is independently classified from its 15×15 max-Z crop (resized internally to 64×64 by the CNN). Frames without tracked coordinates receive NaN. The classification is performed in `ml_classification.py`, which groups particles by FOV to minimize redundant LIF loading.
+
+Key ML design decisions:
+- **Frame-by-frame** classification (not trajectory-averaged), producing time-resolved ON/OFF vectors for burst/dwell quantification.
+- **Exact coordinates only** — frames without tracked (x,y) are left as NaN; the burst module's NaN-bridge logic fills short gaps post-classification.
+- **Intensity-validity masking** — after QC filtering, ML binary values are set to NaN wherever the raw intensity matrix is NaN, preventing orphaned ON/OFF evidence.
+- **Provenance** — model path, SHA256 hash, MicroLive version, and all classification parameters are saved in `params.json`.
 
 **`fraction_of_trace_max`** — matches [Goldman et al., Mol Cell 2023](https://doi.org/10.1016/j.molcel.2023.06.003):
 
@@ -113,8 +129,8 @@ where $\mu_{\text{off},i}$ is the **median** of the lowest-Q quantile of finite 
 
 Post-thresholding event processing and cleanup:
 
-After initial thresholding, the binary matrix goes through a robust sequence of filtering and refinement steps:
-1. **Step 2 (Short-event merging)**: Events shorter than `min_event_duration_frames` (default 3 frames / 15 s) are merged into the neighbouring state.
+After initial thresholding (whether from SNR, ML, or any other mode), the binary matrix goes through a robust sequence of filtering and refinement steps. **All modes** (including ML) pass through the same cleanup pipeline:
+1. **Step 2 (Short-event merging)**: Events shorter than `min_event_duration_frames` (default 3 frames / 15 s) are merged into the longer adjacent neighbour (left/right sensing). This prevents isolated single-frame classifications from creating spurious micro-events.
 2. **Step 2b (Short-ON relabeling)**: ON runs (bursts) shorter than `min_burst_duration_seconds` (default 30.0 s) are re-labeled as OFF. This ensures transient spikes do not inflate `fraction_time_on` or fragment surrounding OFF dwells. Following this step, `binary_matrix` represents accepted ON episodes.
 3. **Step 2c (NaN gap bridging)**: Internal NaN gaps $\leq$ `max_internal_nan_gap` (default 2 frames / 10 s) are bridged between same-state neighbours. Because bridging is executed *after* failed-ON relabeling, patterns like `OFF-NaN-shortON-NaN-OFF` become `OFF-NaN-OFF-NaN-OFF` and are successfully bridged into a single continuous `OFF` dwell, preventing dwell fragmentation.
 4. **Step 3 (Censoring of boundary dwells)**: 
@@ -162,6 +178,7 @@ All plots are saved in **dual format** (PNG for preview + SVG for publication).
 | Mean trace | `mean_trace_raw_vs_processed` | Population-average intensity (raw vs. smoothed) with SEM |
 | Dual-channel kymograph | `kymograph_dual_channel` | Additive RGB kymograph (Green = folding ch0, Magenta = nascent ch1), sorted by trajectory length (longest first), QC-passed trajectories only. Uses per-trace percentile normalization. |
 | SNR dual-channel kymograph | `kymograph_dual_channel_snr` | Same additive RGB layout as the intensity kymograph, but input data is per-frame SNR instead of intensity. Uses **fixed-range normalization**: SNR values are linearly mapped from `[0, SNR_CAP]` to `[0, 1]`, where `SNR_CAP = threshold x 2` (e.g. 6.0 when threshold = 3.0). This means SNR = 0 is black, SNR = threshold is 50% brightness, SNR >= SNR_CAP is full color. No per-trace rescaling is applied, so absolute SNR is directly interpretable and dim trajectories genuinely appear dim. |
+| ML state kymograph | `kymograph_ml_state` | **(ML mode only)** 3-colour state map showing per-frame ML classification results overlaid with nascent channel presence. **White** = colocalized (folding ON + nascent ON), **Green** = folding only (ON in folding, OFF in nascent), **Magenta** = nascent only (OFF in folding, ON in nascent), **Black** = both OFF. Dark grey = NaN/missing. Includes a colour legend. |
 | Representative montages | `montages_{construct}.pdf` | Cell-crop thumbnails + intensity traces + ON/OFF state bars for selected particles. Individual PNG/SVG in `plots_time_courses/`. Generated by `plotting_montage_crops.py`. |
 | Burst durations | `burst_duration_distribution` | Histogram + CDF of burst durations (min) |
 | Dwell durations | `dwell_duration_distribution` | Histogram + CDF of dwell durations (min, terminal excluded) |
@@ -205,18 +222,25 @@ python run_analysis.py
 **Requirements:** External drive mounted at `/Volumes/Luis_DRIVE/CoF Manuscript LIFs/CoF_long_movies/`
 
 **Output structure:**
+
+The output directory is auto-generated from the threshold mode and value:
+- SNR mode → `results_snr_3/` (for threshold=3.0)
+- ML mode → `results_ml_0_51/` (for ml_threshold=0.51)
+
 ```
-results/burst_quantification/
+results_snr_3/                        # or results_ml_0_51/ for ML mode
 ├── diagnostics/
 │   ├── detrend_diagnostic.png/.svg
 │   └── signal_contrast_diagnostic.png/.svg
-├── 4sf/                          # per-construct
+├── 4sf/                              # per-construct
 │   ├── quantification/
-│   │   ├── params.json
+│   │   ├── params.json               # includes ML provenance when threshold_mode=ml
 │   │   ├── raw_matrix.npy
 │   │   ├── processed_matrix.npy
 │   │   ├── normalized_matrix.npy
-│   │   ├── binary_matrix.npy
+│   │   ├── binary_matrix.npy         # post-cleanup ON/OFF (same for both modes)
+│   │   ├── ml_binary_raw.npy         # (ML only) pre-cleanup ML binary
+│   │   ├── ml_score_matrix.npy       # (ML only) raw double-sigmoid scores
 │   │   ├── qc_table.csv
 │   │   ├── event_table.csv
 │   │   └── trajectory_summary.csv
@@ -226,6 +250,7 @@ results/burst_quantification/
 │       └── quality_control/
 │           ├── kymograph_dual_channel.png/.svg
 │           ├── kymograph_dual_channel_snr.png/.svg
+│           ├── kymograph_ml_state.png/.svg   # (ML only) 3-colour state map
 │           ├── mean_trace_raw_vs_processed.png/.svg
 │           ├── burst_duration_distribution.png/.svg
 │           ├── dwell_duration_distribution.png/.svg
@@ -321,18 +346,32 @@ All parameters live in `config.yaml`. Loader keys (SNR filter, `shift_trajectori
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `time_interval_seconds` | 5.0 | Seconds per frame |
-| `threshold` | 3.0 | Threshold value (meaning depends on mode — see [Threshold Modes](#threshold-modes)). For `snr`: SNR cutoff (standard default is `3.0`); for `fraction_of_trace_max`: θ; for `off_baseline_mad`: k multiplier. |
-| `threshold_mode` | `snr` | One of `snr`, `fraction_of_trace_max`, `off_baseline_mad`, `normalized_absolute`, `absolute_raw` |
+| `threshold` | 3.0 | Threshold value (meaning depends on mode — see [Threshold Modes](#threshold-modes)). For `snr`: SNR cutoff (standard default is `3.0`); for `fraction_of_trace_max`: θ; for `off_baseline_mad`: k multiplier. Ignored when `threshold_mode=ml`. |
+| `threshold_mode` | `snr` | One of `snr`, `ml`, `fraction_of_trace_max`, `off_baseline_mad`, `normalized_absolute`, `absolute_raw` |
 | `off_baseline_quantile` | 0.50 | For `off_baseline_mad` only. Fraction of lowest-intensity frames defining the per-trace OFF pool used to estimate baseline + MAD<sub>off</sub>. |
 | `min_valid_fraction` | 0.30 | Minimum fraction of finite frames to keep a trajectory (e.g. 30% of 360 frames = 108 valid frames) |
 | `max_total_internal_nan_frames` | 3 | Maximum total scattered internal NaN frames allowed by MicroLive alignment |
 | `max_internal_nan_gap` | 2 | Maximum consecutive internal NaN frames allowed and bridged during event segmentation |
 | `smooth_method` | `median` | Smoothing filter type (`median`, `mean`, `gaussian`, `none`) |
 | `smooth_window` | 3 | Smoothing window size (frames) |
-| `min_event_duration_frames` | 3 | Events shorter than this are merged (15 s at 5 s/frame) |
-| `min_burst_duration_seconds` | 30.0 | Bursts/ON episodes shorter than this are flagged (`passes_duration_filter = False`) and re-labeled as OFF before NaN bridging |
+| `min_event_duration_frames` | 3 | Events shorter than this are merged into the longer adjacent neighbour (left/right sensing). Default: 15 s at 5 s/frame. Applies to **all modes** including ML. |
+| `min_burst_duration_seconds` | 30.0 | Bursts/ON episodes shorter than this are re-labeled as OFF before NaN bridging. Applies to **all modes** including ML. |
 | `exclude_terminal_dwell` | `True` | Exclude terminal dwells (right-censored) from dwell statistics |
 | `count_initial_dwell` | `False` | Exclude initial dwells (left-censored) from dwell statistics |
+
+### ML Classification Parameters
+
+These parameters are used when `threshold_mode: ml`. They control how the MicroLive CNN classifies per-frame crops.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ml_threshold` | 0.51 | MicroLive double-sigmoid score cutoff. The CNN applies sigmoid in its forward pass and `predict_crops` applies sigmoid again, so 0.51 refers to the compressed score scale, not raw probability. |
+| `ml_channel` | `null` | Channel index to classify. `null` = use `burst_ch` (channel 0). Integer value overrides; note that `0` is valid and distinct from `null`. |
+| `ml_crop_size_px` | 15 | Side length (pixels) of the square crop extracted at each tracked (x,y). The CNN resizes this internally to 64×64. |
+| `ml_projection_mode` | `max_z` | Projection mode for 3D data. Currently only `max_z` is supported. |
+| `ml_gaussian_filter_value` | 0 | Gaussian σ applied to the max-Z projection before cropping. 0 = raw pixels (recommended for ML). |
+| `ml_apply_photobleaching` | `true` | Whether to apply photobleaching correction to the full scene before extracting crops. |
+| `ml_photobleaching_mode` | `entire_image` | Mode for photobleaching correction: `entire_image` or `roi`. |
 
 ### Tracking-Loader Parameters
 
@@ -363,7 +402,8 @@ These control figure generation, sorting, and statistical adjustments. They live
 
 | Mode | Formula | Typical `threshold` | Use Case |
 |------|---------|---------------------|----------|
-| `snr` | ON if `SNR(t) >= theta` | 3.5 | **Active default.** Per-frame SNR from spot detection. Self-normalized by local noise, so the same cutoff works across constructs with different absolute brightness. Requires `snr_matrix`. |
+| `snr` | ON if `SNR(t) >= theta` | 3.0 | Per-frame SNR from spot detection. Self-normalized by local noise, so the same cutoff works across constructs with different absolute brightness. Requires `snr_matrix`. |
+| `ml` | ON if `CNN_score(crop) >= ml_threshold` | 0.51 | MicroLive CNN classifies per-frame max-Z crops. Image-based, independent of intensity quantification. Requires `microlive>=1.0.35`. See [ML Classification Parameters](#ml-classification-parameters). |
 | `fraction_of_trace_max` | ON if `I_proc >= theta * max(I_proc)` | 0.05 | Anchored on the processed/smoothed per-trace peak. Best for clean bimodal traces with high contrast (Goldman et al. 2023). On noisy traces the bar can fall into the noise band and saturate `fraction_on --> 1`. |
 | `off_baseline_mad` | ON if `I >= median(bottom Q%) + theta * 1.4826 * MAD_off` | 4.0 | Anchored on per-trace **noise floor**. Robust to outlier peaks and to background-subtracted traces with negative values. Produces biologically interpretable fraction-ON values (~0.2-0.4). Q is controlled by `off_baseline_quantile`. |
 | `normalized_absolute` | ON if `I_hat >= theta` (on normalized [0,1]) | 0.3-0.5 | Sensitivity analysis against the percentile-normalized matrix. |
@@ -422,8 +462,19 @@ Events labeled "burst" and "dwell" are **observed folding-channel ON/OFF episode
 
 - Python 3.8+
 - NumPy, Pandas, SciPy, Matplotlib
-- MicroLive (optional — enables `shift_trajectories`, `detrend_trajectories`, `forward_fill_nan_2d`)
+- MicroLive >= 1.0.35 (required for ML mode; enables `shift_trajectories`, `detrend_trajectories`, `forward_fill_nan_2d`, and `ParticleDetectionCNN`)
+- PyTorch (pulled in by MicroLive for CNN inference)
 - `utilities/config.py` (construct name mappings)
+
+### Local MicroLive Development
+
+By default, the pipeline imports the **installed** `microlive` package. To use a local sibling checkout (e.g., `../microlive/`), set the environment variable:
+
+```bash
+COF_USE_LOCAL_MICROLIVE=1 python run_analysis.py
+```
+
+Without this variable, the sibling path is never injected, ensuring clean pip-install testing.
 
 ---
 
