@@ -46,7 +46,7 @@ from pathlib import Path
 # =============================================================================
 output_dir = Path(__file__).resolve().parent.parent  # simple_model_gm_4x_ke/
 figures_dir = output_dir / 'figures'
-data_dir = output_dir / 'data'
+data_dir = output_dir / 'databases'
 figures_dir.mkdir(exist_ok=True)
 data_dir.mkdir(exist_ok=True)
 
