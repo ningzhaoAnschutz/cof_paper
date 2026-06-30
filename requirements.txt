@@ -1,0 +1,7 @@
+# Core (microlive bundles all imaging/analysis deps including tasep-models)
+microlive>=1.0.37
+
+# Project-specific
+biopython>=1.80
+PyYAML>=6.0
+ipykernel>=6.0

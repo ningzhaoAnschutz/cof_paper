@@ -1,84 +1,74 @@
-# Backup folders from migration
-kk_*/
-
-# Generated files
+# ── Python ────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
-.DS_Store
+
+# ── Jupyter ───────────────────────────────────────────────────────
 .ipynb_checkpoints/
 
-# Data and results (too large for git)
+# ── OS & Editor ───────────────────────────────────────────────────
+.DS_Store
+.vscode/
+~$*
+
+# ── Data & large binary files ─────────────────────────────────────
 data/
 results/
 *.tif
 *.lif
+*.cds.all.fa
+*.dna
+*.npz
 
-# Environment
-.gemini/
-.agent/
-temp_migration_plan/
+# ── Output files (logs, text, tables) ────────────────────────────
+*.log
+*.csv
+*.json
 
-# Other
-.vscode
-temp/
-config.yml
-merged
-config
-**/[C]onfig*
-~$*
-Figure_Distributions_*
-out.txt
-output.txt
+# ── Images & media ────────────────────────────────────────────────
+*.jpg
+*.png
+*.svg
+*.pdf
+
+# ── Documents ─────────────────────────────────────────────────────
+*.pptx
+*.docx
+
+# ── Analysis & pipeline output folders ────────────────────────────
 analyses/
 analyses_*
-output__*
-slurm-*
-out-*
 masks_*
 mask_*
-tests/
-test*
-test*/
-*old*/
-*Old*/
 filtered_images_*/
-OneDrive*/
-*.jpg
-*.pdf
-spatio_temporal_models/
-gene_sequences/
-*.dna
-*particle*.png
-dev/
-human_genome/
-*.cds.all.fa
-kk_*
-*.pptx
-
-# ignore log files
-*.log
-# ignore txt files
-*.txt
-# ignore png files
-*.png   
-# ignore json files
-*.json
-# ignore svg files
-*.svg
-# ignore png files
-*.png   
-# ignore csv files
-*.csv
-*kk_old/
-*.npz
-*.docx
 modeling/
 diagrams_methods/
 plots_time_courses/
-quality_control/
-
-modeling/
 time_courses/
+quality_control/
 acf/
+
+# ── Cluster / HPC ────────────────────────────────────────────────
+slurm-*
+out-*
+output__*
+
+# ── Dev, temp & scratch ──────────────────────────────────────────
 dev/
-writing/ 
+temp/
+writing/
+**/[C]onfig*
+.agent/
+
+# ── Legacy / old backups ─────────────────────────────────────────
+kk_*/
+*kk_old/
+*old*/
+*Old*/
+merged
+
+# ── Test artifacts ────────────────────────────────────────────────
+tests/
+test*/
+
+# ── Cloud sync leftovers ─────────────────────────────────────────
+OneDrive*/
