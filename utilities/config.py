@@ -6,7 +6,7 @@ across notebooks and ensure consistency.
 """
 
 # Full descriptive name mapping for reporter plasmids
-# ⚠️ Key order determines default plotting order via plasmid_order
+# NOTE: Key order determines default plotting order via plasmid_order
 REPORTER_PLASMID_NAME_MAPPING = {
     # sfGFP series (co-translational folding)
     "pNZ212": "6sfGFP",  # 6x sfGFP, 0x mCh

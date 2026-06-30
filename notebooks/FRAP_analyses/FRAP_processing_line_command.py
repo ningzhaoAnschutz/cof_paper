@@ -1,20 +1,27 @@
-# This file is intended to be used in the command line to process FRAP data.
-# The script reads the data from a lif file, segments the nuclei and background of the image, detects the roi, and quantifies the intensity of the roi.
-# The script saves the results in a pdf file and a csv file with the quantification of the intensity of the roi.
-# The script also fits the FRAP data to  single and double exponential models and saves the results in a pdf file and a csv file.
-# The script also removes the tracking errors by removing the elements where the code is unable to detect the roi and saves the results in a pdf file and a csv file.
-
-# To run this script in the command line, you need to provide the path to the lif file as an argument.
-# An example of how to run the script in the command line is shown in : FRAP_processing.ipynb
+# Command-line FRAP processing pipeline.
+# Usage example: see FRAP_processing.ipynb
 
 import sys
 from pathlib import Path
-from microlive.pipelines.pipeline_FRAP import *
+from microlive.pipelines.pipeline_FRAP import (
+    concatenate_images,
+    create_image_arrays,
+    find_nearest,
+    calculate_mask_and_background_intensity,
+    find_frap_roi,
+    plot_images_frap,
+    plot_frap_quantification,
+    plot_frap_quantification_all_images,
+    create_pdf,
+    remove_cell_without_roi_detection,
+    fit_model_to_frap,
+    fit_model_to_frap_immobile_fraction,
+    plot_t_half_values,
+)
 from microlive.imports import *
 from microlive import microscopy as mi
 current_dir = Path().resolve()
 
-# Reading the parameters passed in the command line
 data_folder_path = Path(sys.argv[1])
 frap_time = int(sys.argv[2]) #10
 stable_FRAP_channel = int(sys.argv[3]) #1
@@ -45,7 +52,6 @@ list_concatenated_images, list_names_concatenated_images, list_time_concatenated
 number_images = len(list_concatenated_images)
 print('Total number of concatenated images:',number_images)
 
-# creating a folder for the results
 if fit_model_considering_immobile_fraction == True:
     results_folder = current_dir.joinpath('results','results_FRAP_'+data_folder_path.stem + '_immobile_fraction')
 else:
@@ -59,12 +65,12 @@ for i in range(len(list_names_concatenated_images)):
     name_frap_plot = list_names_concatenated_images[i].replace(' ', '_')+'.png'
     name_frap_plot_quantification = list_names_concatenated_images[i].replace(' ', '_')+'quantification.png'
     combined_image_path = results_folder.joinpath('results_quantification_frap_'+str(i)+'.png')
-    # This function segments the nuclei and background of the image and return the image in the correct format for the FRAP analysis
+    # Segment nuclei and background, prepare arrays for FRAP analysis
     image_TZXYC, image_TZXYC_masked, image_TXY, masks_TXY, pseudo_cytosol_masks_TXY, background_mask,frame_values = create_image_arrays(list_concatenated_images, selected_image=i,FRAP_channel_to_quantify=FRAP_channel_to_quantify,pretrained_model_segmentation=pretrained_model_segmentation,frap_time=frap_time,starting_changing_frame=starting_changing_frame, step_size_increase=step_size_increase, min_diameter=radius_roi_size_px*2)
     # Conver the used selected frames to the index of the frames
     if masks_TXY is not None:
         list_selected_frames = (  [find_nearest(frame_values, time) for time in list_selected_frame_values_real_time])
-        # This function calculates the intensity of the nucleus and background of the image
+        # Calculate nucleus and background intensities
         mask_intensity_nucleus, mask_intensity_background ,mask_intensity_pseudo_cytosol = calculate_mask_and_background_intensity(image_TXY, masks_TXY,background_mask, pseudo_cytosol_masks_TXY)
         #temporal_mean_intensity_nucleus, temporal_mean_intensity_background = calculate_mask_and_background_intensity(image_TXY, masks_TXY,background_mask)
     else:
@@ -77,7 +83,7 @@ for i in range(len(list_names_concatenated_images)):
         print('No mask detected')
         print("--------------------")
     else:
-        # this section detects the roi in the image.
+        # Detect FRAP ROI
         mean_roi_frap,mean_roi_frap_normalized, coordinates_roi, df_selected_trajectory = find_frap_roi(image_TZXYC_masked,image_TZXYC, masks_TXY, frap_time, min_diameter=radius_roi_size_px*2,FRAP_channel_to_quantify=FRAP_channel_to_quantify,stable_FRAP_channel=stable_FRAP_channel,show_binary_plot=False,mask_intensity_background=mask_intensity_background,use_frap_time_for_roi_detection=use_frap_time_for_roi_detection)
     if mean_roi_frap is None:
         print("--------------------")
@@ -95,7 +101,6 @@ for i in range(len(list_names_concatenated_images)):
         mi.Utilities().combine_images_vertically([name_frap_plot, name_frap_plot_quantification], combined_image_path, delete_originals=True)
 
         df_tracking = pd.DataFrame({'frame': frame_values, 'mean_roi_frap_normalized': mean_roi_frap_normalized, 'mean_roi_frap': mean_roi_frap, 'mask_intensity_nucleus': mask_intensity_nucleus, 'mask_intensity_background': mask_intensity_background, 'mask_intensity_pseudo_cytosol': mask_intensity_pseudo_cytosol})
-        # add a column to the dataframe with the name of the image
         df_tracking['image_name'] = list_names_concatenated_images[i]
         if save_individual_dataframes:
             # path to save the dataframe
@@ -103,12 +108,10 @@ for i in range(len(list_names_concatenated_images)):
             df_tracking.to_csv(path_tracking_df, index=False)
         print('Processing image number:',i)
         list_combined_image_paths.append(combined_image_path)
-        # concatenate all the dataframes
         if i == 0 or 'df_tracking_all' not in locals():
             df_tracking_all = df_tracking
         else:
             df_tracking_all = pd.concat([df_tracking_all, df_tracking], ignore_index=True)
-# save the dataframe
 path_tracking_df_all = results_folder.joinpath('df_'+data_folder_path.stem+'.csv')
 df_tracking_all.to_csv(path_tracking_df_all, index=False)
 
@@ -121,7 +124,7 @@ name_plot_frap = results_folder.joinpath('results_plot_FRAP_'+data_folder_path.s
 _, _,_ =plot_frap_quantification_all_images(df_tracking_all, save_plot=True, plot_name=name_plot_frap)
 
 
-# remove tracking errors by removing the elements where the code is unable to detect the roi
+# Remove cells where ROI was not detected
 threhsold_to_remove_tracking_errors=0.1  # use values between 0.05 and 0.1
 df_tracking_removed_roi_no_detected= remove_cell_without_roi_detection(df_tracking_all,threhsold=threhsold_to_remove_tracking_errors)
 path_tracking_df_all_removed_roi_no_detected  = results_folder.joinpath('df_'+data_folder_path.stem+'_removed_no_roi_detected.csv')
@@ -144,9 +147,6 @@ plot_name_fit_average_second.write_bytes(plot_name_fit_average.read_bytes())
 
 
 
-# calculate the mean intensity for all time points for the background, nucleus and pseudo cytosol
-
-
 
 # fit FRAP for each image
 fit_results = []
@@ -154,7 +154,7 @@ for i, name in enumerate( df_tracking_removed_roi_no_detected['image_name'].uniq
     plot_name = results_folder.joinpath('results_fit_FRAP_'+data_folder_path.stem+'_'+name.replace(' ', '_')+'.png')
     df_selected = df_tracking_removed_roi_no_detected[df_tracking_removed_roi_no_detected['image_name'] == name]
 
-    # calculate the mean intensity  for THE FIRST TIME POINT for the background, nucleus and pseudo cytosol IN df_selected
+    # First-frame intensities for background, nucleus, pseudo-cytosol
     mask_intensity_nucleus = df_selected['mask_intensity_nucleus'].iloc[0]
     mask_intensity_background = df_selected['mask_intensity_background'].iloc[0]
     mask_intensity_pseudo_cytosol = df_selected['mask_intensity_pseudo_cytosol'].iloc[0]
@@ -180,9 +180,7 @@ for i, name in enumerate( df_tracking_removed_roi_no_detected['image_name'].uniq
     list_combined_image_paths_fits.append(plot_name)
 #make all values numeric except the image name
 df_fit = df_fit.apply(pd.to_numeric, errors='ignore')
-# save the dataframe
 plt.close('all')
-# save the dataframe
 path_fit_df = results_folder.joinpath('df_FRAP_fit_'+data_folder_path.stem+'.csv')
 df_fit.to_csv(path_fit_df, index=False)
 
