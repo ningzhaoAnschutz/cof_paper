@@ -1,0 +1,1709 @@
+#!/usr/bin/env python3
+from pathlib import Path
+current_dir = Path().resolve()
+from microlive.imports import *
+from microlive import microscopy as mi
+import tasep_models as tm
+from tasep_models import *
+
+
+plt.rcParams.update({
+        'figure.facecolor': 'white',
+        'axes.facecolor': 'white',
+        'axes.edgecolor': 'black',
+        'axes.linewidth': 1.5,
+        'font.family': 'sans-serif',
+        'font.sans-serif': 'Arial',
+        'axes.labelsize': 16,
+        'axes.titlesize': 16,
+        'xtick.labelsize': 14,
+        'ytick.labelsize': 14,
+        'axes.labelcolor': 'black',
+        'text.color': 'black',
+        'xtick.color': 'black',
+        'ytick.color': 'black',
+    })
+
+def calculate_number_of_particles_per_frame(particle_counts_per_frame, inhibitor_frame_index):
+    """Normalize the number of particles per frame to the average before treatment.
+
+    All frames are divided by the average particle count before treatment.
+    If that average is zero, returns an array of zeros.
+
+    Args:
+        particle_counts_per_frame: 1D array of particle counts per frame.
+        inhibitor_frame_index: The frame index at which treatment starts.
+
+    Returns:
+        Tuple of (normalized_particles, average_particles_before_treatment).
+    """
+    # Compute the average particle count before treatment
+    pre_counts = particle_counts_per_frame[:inhibitor_frame_index]
+    average_particles_before_treatment = pre_counts.mean()
+
+    # Normalize all frames by the pre-treatment average
+    if average_particles_before_treatment == 0:
+        normalized_particles = np.zeros_like(particle_counts_per_frame, dtype=float)
+    else:
+        normalized_particles = particle_counts_per_frame / average_particles_before_treatment
+
+    return normalized_particles, average_particles_before_treatment
+
+def calculate_intensity(particle_counts_per_frame, sum_intensities_per_frame, inhibitor_frame_index, normalization_method='mean', percentile_range=(5, 95)):
+    """Normalize the intensity per frame.
+
+    For frames before the treatment, each frame's intensity is given by
+    sum_intensities / particle_counts. If the particle count is zero in a frame,
+    the normalized intensity is set to zero.
+
+    For frames after the treatment, the sum intensities are divided by the average
+    particle count before treatment. If that average is zero, zeros are returned for
+    all frames after treatment.
+
+    Args:
+        particle_counts_per_frame: 1D array of particle counts per frame.
+        sum_intensities_per_frame: 1D array of sum intensities per frame.
+        inhibitor_frame_index: The frame index at which treatment starts.
+        normalization_method: 'mean' (default) divides by pre-treatment mean,
+            'minmax' scales the trajectory to [0, 1] range,
+            'percentile' scales using percentile bounds (robust to outliers).
+            None: no normalization.
+        percentile_range: Percentile bounds for 'percentile' method.
+            Default (5, 95). Use (1, 99) for wider range.
+
+    Returns:
+        Tuple of (normalized_intensities, raw_avg_intensities, avg_particles_before_treatment).
+    """
+    # Compute the average particle count before treatment.
+    pre_counts = particle_counts_per_frame[:inhibitor_frame_index]
+    average_particles_before_treatment = pre_counts.mean()
+
+    # For frames before treatment, avoid division by zero:
+    pre_intensities = sum_intensities_per_frame[:inhibitor_frame_index]
+    intensity_before_treatment = np.divide(
+        pre_intensities, pre_counts,
+        out=np.zeros(pre_intensities.shape, dtype=float),
+        where=pre_counts != 0,
+    )
+    # For frames after treatment, if the average is zero then return zeros.
+    post_intensities = sum_intensities_per_frame[inhibitor_frame_index:]
+    if average_particles_before_treatment == 0:
+        intensity_after_treatment = np.zeros_like(post_intensities)
+    else:
+        intensity_after_treatment = post_intensities / average_particles_before_treatment
+    # Combine the two segments and return the result.
+    average_intensity_with_respect_number_particles = np.concatenate([intensity_before_treatment, intensity_after_treatment])
+
+    # Apply normalization
+    # 'minmax' and 'percentile' are handled globally in process_inhibitor_data
+    # (across all cells), so here they pass through raw per-cell intensities.
+    # 'mean' is inherently per-cell (divides by pre-treatment mean).
+    if normalization_method == 'mean':
+        mean_before_treatment = average_intensity_with_respect_number_particles[:inhibitor_frame_index].mean()
+        intensities_normalized_before_treatment_intensity = average_intensity_with_respect_number_particles / mean_before_treatment
+    else:
+        intensities_normalized_before_treatment_intensity = average_intensity_with_respect_number_particles
+
+    return intensities_normalized_before_treatment_intensity, average_intensity_with_respect_number_particles, average_particles_before_treatment
+
+
+# ── Model definitions ────────────────────────────────────────────────────────
+
+def _linear_model(x, a, b):
+    """Linear decay: y = a*x + b"""
+    return a * x + b
+
+
+def _exponential_model(x, A, tau, C):
+    """Exponential decay: y = A * exp(-x/τ) + C"""
+    return A * np.exp(-x / tau) + C
+
+
+def _heaviside_model(x, A, T, C):
+    """Larson 2011 Heaviside-ramp: y = A*(1 - x/T)*H(T - x) + C
+
+    Linear decay from A+C to C, then flat at C for x > T.
+    """
+    x = np.asarray(x, dtype=float)
+    return np.where(x <= T, A * (1.0 - x / T) + C, C)
+
+
+# ── Fitting function ─────────────────────────────────────────────────────────
+
+def fit_inhibitor_model(x_data, y_data, err_data=None, model='exponential',
+                        fit_start_idx=None, fit_end_idx=None,
+                        runoff_fraction=0.95, basal_value=None):
+    """Fit inhibitor run-off data to a decay model.
+
+    Args:
+        x_data: Time array (e.g., time in minutes, recentered so 0 = inhibitor).
+        y_data: Mean intensity trajectory (1D).
+        err_data: Per-point measurement uncertainty (e.g., SEM from individual
+            cells). Same length as y_data. When provided, curve_fit performs
+            weighted least-squares and χ² is computed as Σ[(y-f)²/σ²].
+            When None, unweighted fitting is used.
+        model: One of 'linear', 'exponential', 'heaviside',
+            'linear_extrapolated'.
+        basal_value: Baseline intensity for 'linear_extrapolated' model.
+            When provided, t_runoff is the time at which the fitted line
+            crosses this value. Typically computed from the last
+            background_frames of the normalized mean trajectory. When None
+            and model is 'linear_extrapolated', falls back to estimating
+            baseline from the last 20% of the full y_data array.
+        fit_start_idx: Index into x_data/y_data for the start of the fitting
+            range. Defaults to 0 (start of the array).
+        fit_end_idx: Index into x_data/y_data for the end of the fitting range
+            (inclusive). Defaults to len(x_data) - 1 (end of the array).
+        runoff_fraction: Fraction of total decay used to define run-off time
+            (default 0.95).
+
+    Returns:
+        On success, a dictionary with keys: 'model', 'params',
+        'fitted_curve', 't_half', 't_runoff', 'R2', 'chi2',
+        'chi2_reduced', 'dof'. Returns None if fitting fails.
+    """
+    x_data = np.asarray(x_data, dtype=float)
+    y_data = np.asarray(y_data, dtype=float)
+    if err_data is not None:
+        err_data = np.asarray(err_data, dtype=float)
+
+    # Default range: full array
+    i0 = fit_start_idx if fit_start_idx is not None else 0
+    i1 = (fit_end_idx + 1) if fit_end_idx is not None else len(x_data)
+
+    x_fit = x_data[i0:i1]
+    y_fit = y_data[i0:i1]
+    err_fit = err_data[i0:i1] if err_data is not None else None
+
+    # Remove NaN values (e.g., from artifact removal at inhibitor frame)
+    valid = np.isfinite(x_fit) & np.isfinite(y_fit)
+    if err_fit is not None:
+        valid = valid & np.isfinite(err_fit)
+    x_fit = x_fit[valid]
+    y_fit = y_fit[valid]
+    if err_fit is not None:
+        err_fit = err_fit[valid]
+        # Replace zero uncertainties with a small value to avoid division by zero
+        err_fit = np.where(err_fit == 0, np.min(err_fit[err_fit > 0]) * 0.1 if np.any(err_fit > 0) else 1e-10, err_fit)
+        sigma_kwarg = {'sigma': err_fit, 'absolute_sigma': True}
+    else:
+        sigma_kwarg = {}
+
+    if len(x_fit) < 3:
+        print('fit_inhibitor_model: not enough data points to fit.')
+        return None
+
+    model = model.lower().strip()
+
+    try:
+        if model == 'linear':
+            # y = a*x + b
+            popt, pcov = curve_fit(_linear_model, x_fit, y_fit, **sigma_kwarg)
+            a, b = popt
+            perr = np.sqrt(np.diag(pcov))
+            fitted_full = _linear_model(x_data, *popt)
+
+            # Derived quantities
+            # Estimate actual baseline from last 20% of data
+            tail = max(1, len(y_fit) // 5)
+            Iss = float(np.mean(y_fit[-tail:]))
+            I0 = b  # intensity at x = 0 (fitted intercept)
+            if a != 0 and I0 != Iss:
+                t_half = (I0 - (I0 + Iss) / 2.0) / (-a)   # when y = midpoint
+                t_runoff = 2.0 * t_half
+            else:
+                t_half = np.inf
+                t_runoff = np.inf
+
+            params = {'a (slope)': a, 'b (intercept)': b,
+                      'Iss (baseline)': Iss,
+                      'a_err': perr[0], 'b_err': perr[1]}
+
+        elif model == 'exponential':
+            # y = A * exp(-x/τ) + C
+            # Initial guesses (robust to negative/positive baselines)
+            tail = max(1, len(y_fit) // 5)
+            C0 = float(np.mean(y_fit[-tail:]))   # baseline from last 20%
+            A0 = max(float(y_fit[0]) - C0, 1e-8)
+            tau0 = (x_fit[-1] - x_fit[0]) / 3.0
+            popt, pcov = curve_fit(
+                _exponential_model, x_fit, y_fit,
+                p0=[A0, tau0, C0],
+                bounds=([0, 1e-6, -np.inf], [np.inf, np.inf, np.inf]),
+                maxfev=50000,
+                **sigma_kwarg,
+            )
+            A, tau, C = popt
+            perr = np.sqrt(np.diag(pcov))
+            fitted_full = _exponential_model(x_data, *popt)
+
+            # Derived quantities
+            t_half = tau * np.log(2)
+            t_runoff = 2.0 * t_half
+
+            params = {'A (amplitude)': A, 'tau (time constant)': tau,
+                      'C (baseline)': C,
+                      'A_err': perr[0], 'tau_err': perr[1], 'C_err': perr[2]}
+
+        elif model == 'heaviside':
+            # y = A * (1 - x/T) * H(T - x) + C   (Larson 2011)
+            # Initial guesses (robust to negative/positive baselines)
+            tail = max(1, len(y_fit) // 5)
+            C0 = float(np.mean(y_fit[-tail:]))           # baseline from last 20%
+            A0 = max(float(y_fit[0]) - C0, 1e-8)         # amplitude above baseline
+            # Smart T guess: find where data first drops to baseline level
+            crossings = np.where(y_fit <= C0)[0]
+            if len(crossings) > 0:
+                T0 = float(x_fit[crossings[0]] - x_fit[0])
+            else:
+                T0 = float((x_fit[-1] - x_fit[0]) / 2.0)  # fallback: half the range
+            T0 = max(T0, 1.0)  # at least 1 minute
+            popt, pcov = curve_fit(
+                _heaviside_model, x_fit, y_fit,
+                p0=[A0, T0, C0],
+                bounds=([0, 1e-6, -np.inf], [np.inf, np.inf, np.inf]),
+                maxfev=50000,
+                **sigma_kwarg,
+            )
+            A, T, C = popt
+            perr = np.sqrt(np.diag(pcov))
+            fitted_full = _heaviside_model(x_data, *popt)
+
+            # Derived quantities
+            t_half = T / 2.0
+            t_runoff = 2.0 * t_half  # = T (the full dwell time)
+
+            params = {'A (amplitude)': A, 'T (dwell/run-off time)': T,
+                      'C (baseline)': C,
+                      'A_err': perr[0], 'T_err': perr[1], 'C_err': perr[2]}
+
+        elif model == 'linear_extrapolated':
+            # y = a*x + b  (same linear fit, but t_runoff = basal crossing)
+            popt, pcov = curve_fit(_linear_model, x_fit, y_fit, **sigma_kwarg)
+            a, b = popt
+            perr = np.sqrt(np.diag(pcov))
+            fitted_full = _linear_model(x_data, *popt)
+
+            # Use basal value from caller; fallback to tail of full data
+            if basal_value is not None:
+                Iss = float(basal_value)
+            else:
+                tail = max(1, len(y_data) // 5)
+                Iss = float(np.mean(y_data[-tail:]))
+
+            I0 = b  # intensity at x = 0 (fitted intercept)
+
+            # t_runoff = time where fit line crosses basal
+            # Solve: a * t + b = Iss  →  t = (Iss - b) / a
+            if a != 0 and I0 != Iss:
+                t_runoff = (Iss - b) / a
+                t_half = t_runoff / 2.0
+            else:
+                t_half = np.inf
+                t_runoff = np.inf
+
+            params = {'a (slope)': a, 'b (intercept)': b,
+                      'Iss (baseline)': Iss,
+                      'a_err': perr[0], 'b_err': perr[1]}
+
+        else:
+            print(f'fit_inhibitor_model: unknown model "{model}". '
+                  f'Choose from: linear, exponential, heaviside, '
+                  f'linear_extrapolated.')
+            return None
+
+        # Goodness-of-fit metrics (computed on the fitting window only)
+        n_params = len(popt)
+        n_data = len(y_fit)
+        dof = n_data - n_params
+        y_pred_fit = fitted_full[i0:i1][valid]
+        residuals = y_fit - y_pred_fit
+
+        # Unweighted sums of squares (always computed)
+        ss_res = float(np.sum(residuals ** 2))
+        ss_tot = float(np.sum((y_fit - np.mean(y_fit)) ** 2))
+        r_squared = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
+
+        # Chi-squared: weighted if err_data provided, unweighted otherwise
+        if err_fit is not None:
+            chi2 = float(np.sum((residuals / err_fit) ** 2))
+        else:
+            chi2 = ss_res  # equivalent to unweighted χ²
+        chi2_red = chi2 / dof if dof > 0 else np.nan
+
+        result = {
+            'model': model,
+            'params': params,
+            'fitted_curve': fitted_full,
+            't_half': t_half,
+            't_runoff': t_runoff,
+            'runoff_fraction': runoff_fraction,
+            'chi2': chi2,
+            'chi2_reduced': chi2_red,
+            'dof': dof,
+            'R2': r_squared,
+            'n_data': n_data,
+        }
+        return result
+
+    except Exception as e:
+        print(f'fit_inhibitor_model ({model}): fitting failed – {e}')
+        return None
+
+
+# ── Fit table helper ──────────────────────────────────────────────────────────────
+
+def _elongation_rate(fr, gene_length_aa, drug_diffusion_min):
+    """Elongation rate in aa/sec from a fit_inhibitor_model result dict."""
+    dwell = fr['t_runoff'] - drug_diffusion_min
+    if dwell <= 0 or not np.isfinite(dwell):
+        return np.nan
+    return gene_length_aa / (dwell * 60.0)
+
+
+def _print_fit_table(fit_results, fit_start_idx, fit_model, r2_threshold=0.95,
+                     gene_length_effective=None, drug_diffusion_time_min=1.0):
+    """Print a fit comparison table.
+
+    Marks the last endpoint where R² ≥ r2_threshold as RECOMMENDED.
+    This is the fit with the most data points that still meets the
+    R² quality criterion.
+    """
+    valid = [r for r in fit_results if r['fit_result'] is not None]
+    if not valid:
+        print('  (no valid fits to tabulate)')
+        return
+
+    # Last endpoint with R² >= threshold → most data points still qualifying
+    last_good_r2 = None
+    for r in valid:
+        if r['fit_result']['R2'] >= r2_threshold:
+            last_good_r2 = r   # keep updating so the last qualifying row wins
+
+    show_elong = gene_length_effective is not None
+    w = 76 if show_elong else 60
+    print(f'\n{"─"*w}')
+    print(f' Fit Comparison  (start={fit_start_idx}, model={fit_model}, R²≥{r2_threshold})')
+    print(f'{"─"*w}')
+    hdr = f' {"#":>3}  {"end_idx":>7}  {"n_pts":>5}  {"k":>2}  {"χ²_red":>8}  {"R²":>7}'
+    if show_elong:
+        hdr += f'  {"ke(aa/s)":>12}'
+    print(hdr)
+    print(f'{"─"*w}')
+    for i, r in enumerate(fit_results, 1):
+        fr = r['fit_result']
+        if fr is None:
+            print(f' {i:>3}  {r["fit_end_idx"]:>7}  --- fit failed ---')
+            continue
+        n     = fr['n_data']
+        k     = n - fr['dof']
+        chi2r = fr['chi2_reduced']
+        if last_good_r2 is not None and r['fit_end_idx'] == last_good_r2['fit_end_idx']:
+            marker = f'  ← RECOMMENDED'
+        else:
+            marker = ''
+        row = f' {i:>3}  {r["fit_end_idx"]:>7}  {n:>5}  {k:>2}  {chi2r:>8.4f}  {fr["R2"]:>7.3f}'
+        if show_elong:
+            er = r.get('elong_rate', np.nan)
+            row += f'  {er:>12.3f}' if np.isfinite(er) else f'  {"---":>12}'
+        row += marker
+        print(row)
+    print(f'{"─"*w}')
+    if last_good_r2 is None:
+        print(f' No endpoint found with R² ≥ {r2_threshold}. Lower r2_threshold.')
+    print(f'{"─"*w}\n')
+
+
+def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
+                   results_folder=None, plot_name='HT', list_param=None,
+                   responding_indices=None, figsize=(6, 3), time_array_min=None,
+                   mean_intensity_ssa_inh=None, err_intensity_ssa_inh=None,
+                   use_sem=True, show_individual_trajectories=True,
+                   ylims=(0, 1.5), xlims=None,
+                   y_label='Norm. Intensity',
+                   treatment_label='Inhibitor', show_treatment_line=True,
+                   # ── New fitting parameters ──
+                   fit_model=None, fit_start_idx=None, fit_end_idx=None,
+                   show_fit=True, show_runoff_time=True,
+                   colors=None,
+                   runoff_fraction=0.95,
+                   remove_background_intensity=False,
+                   background_frames=10,
+                   show_background_line=False,
+                   show_zero_y_axis=False,
+                   fit_end_range=None, r2_threshold=0.95,
+                   gene_length_effective=None, drug_diffusion_time_min=1.0,
+                   frame_interval_sec=60):
+    """Plot inhibitor run-off data with optional model fit.
+
+    Args:
+        full_frames: Time array (e.g., minutes, recentered so 0 = inhibitor).
+        intensities_normalized: 2D array (n_cells × n_frames) of normalized
+            intensities.
+        inhibitor_frame_index: Frame index at which treatment starts.
+        fit_model: Model to fit: 'linear', 'exponential', 'heaviside', or
+            None (no fit).
+        fit_start_idx: Start index for fitting range. Defaults to
+            inhibitor_frame_index (t=0).
+        fit_end_idx: End index for fitting range (inclusive). Defaults to
+            last frame.
+        show_fit: If True (default), overlay the fitted curve on the plot.
+        show_runoff_time: If True (default), draw vertical lines for t½ and
+            τ_runoff.
+        runoff_fraction: Fraction of total decay for run-off time definition
+            (default 0.95).
+        colors: List of colors for the trajectories. If None, default colors
+            are used.
+        remove_background_intensity: If True, subtract the background intensity
+            (estimated from the last `background_frames` frames within the
+            xlims range) and rescale each trace to [0, 1] using the
+            pre-treatment mean. Default False.
+        background_frames: Number of frames at the end of the experiment (or
+            xlims window) used to estimate background intensity. Default 10.
+        show_background_line: If True, draw a horizontal dashed line at the
+            estimated background intensity level. Default False.
+        show_zero_y_axis: If True, draw a horizontal dashed line at y = 0.
+        fit_end_range: When provided as (start, end), performs a sweep: fits
+            the model from fit_start_idx to each endpoint in
+            range(start, end+1). Only meaningful with fit_model='linear'.
+            Endpoint values are automatically clamped to the available data
+            length. Ignored when None (default).
+
+    Returns:
+        When fit_end_range is None: the fit result dict, or None.
+        When fit_end_range is set: list of dicts per endpoint containing
+        'fit_end_idx' and 'fit_result'.
+    """
+    if colors is None:
+        colors = ['blue']
+    if not isinstance(colors, list):
+        colors = [colors]
+
+    if results_folder is None:
+        results_folder = Path(current_dir).joinpath('results_HT')
+        results_folder.mkdir(exist_ok=True)
+
+    if intensities_normalized is None or len(intensities_normalized) == 0:
+        print('No data to plot.')
+        return None
+
+    if responding_indices is None:
+        responding_indices = list(range(len(intensities_normalized)))
+    if len(responding_indices) == 0:
+        print('No responding cells to plot.')
+        return None
+
+    # ── Background removal and 0-1 rescaling ────────────────────────
+    _bg_raw_value = None  # store for optional dashed line
+    if remove_background_intensity:
+        # Determine the end frame index from xlims or use all data
+        if xlims is not None:
+            end_mask = full_frames <= xlims[1]
+            end_idx = int(np.sum(end_mask))
+        else:
+            end_idx = intensities_normalized.shape[1]
+        bg_start = max(0, end_idx - background_frames)
+        # Estimate background from the MEAN trajectory (robust to per-trace noise)
+        resp_data = intensities_normalized[responding_indices, :]
+        mean_for_bg = np.nanmean(resp_data[:, bg_start:end_idx])
+        _bg_raw_value = mean_for_bg  # save original background value
+        intensities_normalized = intensities_normalized - mean_for_bg
+        # Rescale so the mean pre-treatment intensity = 1
+        mean_pre = np.nanmean(resp_data[:, :inhibitor_frame_index] - mean_for_bg)
+        if mean_pre != 0:
+            intensities_normalized = intensities_normalized / mean_pre
+
+    # Mean ± error (NaN-safe for artifact-removed frames) — needed by both paths
+    if responding_indices:
+        mean_trajectory = np.nanmean(intensities_normalized[responding_indices, :], axis=0)
+        std_trajectory = np.nanstd(intensities_normalized[responding_indices, :], axis=0)
+        if use_sem:
+            n_valid = np.sum(np.isfinite(intensities_normalized[responding_indices, :]), axis=0)
+            n_valid = np.maximum(n_valid, 1)
+            err_trajectory = std_trajectory / np.sqrt(n_valid)
+        else:
+            err_trajectory = std_trajectory
+
+    # ── Compute basal value for linear_extrapolated ───────────────────
+    _basal_value = None
+    if fit_model == 'linear_extrapolated':
+        if remove_background_intensity:
+            # After bg removal + rescaling, basal is 0
+            _basal_value = 0.0
+        else:
+            # Use last background_frames of the normalized mean trajectory
+            if xlims is not None:
+                _end_mask = full_frames <= xlims[1]
+                _basal_end_idx = int(np.sum(_end_mask))
+            else:
+                _basal_end_idx = len(mean_trajectory)
+            _basal_bg_start = max(0, _basal_end_idx - background_frames)
+            _basal_value = float(np.nanmean(mean_trajectory[_basal_bg_start:_basal_end_idx]))
+
+    # ── AIC sweep (no main plot generated) ───────────────────────────────────
+    if fit_end_range is not None:
+        if fit_model not in ('linear', 'linear_extrapolated'):
+            print(f'Warning: fit_end_range is only supported with fit_model="linear" '
+                  f'or "linear_extrapolated". '
+                  f'Ignoring fit_end_range (got fit_model={fit_model!r}).')
+            return None
+
+        start = fit_start_idx if fit_start_idx is not None else inhibitor_frame_index
+        n_frames = len(full_frames)
+        end_min = min(fit_end_range[0], n_frames - 1)
+        end_max = min(fit_end_range[1], n_frames - 1)
+
+        fit_results = []
+        for end_idx in range(end_min, end_max + 1):
+            if end_idx <= start:
+                continue
+            fr = fit_inhibitor_model(
+                full_frames, mean_trajectory,
+                err_data=err_trajectory,
+                model=fit_model,
+                fit_start_idx=start,
+                fit_end_idx=end_idx,
+                runoff_fraction=runoff_fraction,
+                basal_value=_basal_value,
+            )
+            _er = (_elongation_rate(fr, gene_length_effective, drug_diffusion_time_min)
+                   if (fr is not None and gene_length_effective is not None) else np.nan)
+            fit_results.append({'fit_end_idx': end_idx, 'fit_result': fr, 'elong_rate': _er})
+
+        # Per-endpoint plots
+        for r in fit_results:
+            end_idx = r['fit_end_idx']
+            fr = r['fit_result']
+            fig2, ax2 = plt.subplots(figsize=figsize, facecolor='white')
+            ax2.set_facecolor('white')
+            ax2.plot(full_frames, mean_trajectory, 'o-',
+                     color=colors[0], linewidth=1, label='Experimental (mean)', markersize=6)
+            ax2.fill_between(full_frames,
+                             mean_trajectory - err_trajectory,
+                             mean_trajectory + err_trajectory,
+                             color=colors[0], alpha=0.2)
+            if show_treatment_line:
+                ax2.axvline(x=0, color='black', linestyle='--', linewidth=1,
+                            label=f'{treatment_label} Treatment')
+            if fr is not None:
+                # Crop to the actual fitting window [start : end_idx+1]
+                fit_x = full_frames[start:end_idx + 1]
+                fit_y = fr['fitted_curve'][start:end_idx + 1]
+                positive_mask = fit_y > 0
+                if np.any(positive_mask):
+                    last_pos = np.where(positive_mask)[0][-1] + 1
+                    fit_x = fit_x[:last_pos]
+                    fit_y = fit_y[:last_pos]
+                else:
+                    fit_x = fit_x[:0]
+                    fit_y = fit_y[:0]
+                if len(fit_x) > 0:
+                    _fit_label = f'Lin.Extrap. Fit' if fit_model == 'linear_extrapolated' else f'Linear Fit'
+                    ax2.plot(fit_x, fit_y, '-', color='red', linewidth=1.5,
+                             label=f'{_fit_label} ({start}, {end_idx})\nR²={fr["R2"]:.3f}')
+
+                # Dashed red extrapolation line for linear_extrapolated
+                if fr['model'] == 'linear_extrapolated' and len(fit_x) > 0:
+                    _t_ro = fr['t_runoff']
+                    if np.isfinite(_t_ro) and _t_ro > fit_x[-1]:
+                        _extrap_x = np.linspace(fit_x[-1], _t_ro, 50)
+                        _extrap_y = _linear_model(_extrap_x, fr['params']['a (slope)'],
+                                                  fr['params']['b (intercept)'])
+                        ax2.plot(_extrap_x, _extrap_y, '--', color='red', linewidth=1.5,
+                                 label='_nolegend_')
+
+                if show_runoff_time and np.isfinite(fr['t_half']) and np.isfinite(fr['t_runoff']):
+                    _er = r.get('elong_rate', np.nan)
+                    _elong_lbl = f'  ({_er:.2f} aa/s)' if np.isfinite(_er) else ''
+
+                    if fr['model'] != 'linear_extrapolated':
+                        ax2.axvline(x=fr['t_half'], color='green', linestyle='--', linewidth=1,
+                                    label=fr'$t_{{1/2}}$ ~ {fr["t_half"]:.1f} min')
+                    ax2.axvline(x=fr['t_runoff'], color='orange', linestyle='--', linewidth=1,
+                                label=fr'$\tau_{{runoff}}$ ~ {fr["t_runoff"]:.1f} min{_elong_lbl}')
+
+            if show_background_line and _bg_raw_value is not None:
+                _bg_y = 0 if remove_background_intensity else _bg_raw_value
+                ax2.axhline(y=_bg_y, color='gray', linestyle=':', linewidth=1,
+                            label='_nolegend_')
+
+            ax2.set_xlabel('Time (min)', fontdict={'size': 16, 'color': 'black'})
+            ax2.set_ylabel(y_label, fontdict={'size': 16, 'color': 'black'})
+            ax2.tick_params(axis='both', which='major', labelsize=16,
+                            labelcolor='black', colors='black')
+            for spine in ax2.spines.values():
+                spine.set_color('black')
+                spine.set_linewidth(1.5)
+            plt.ylim(ylims)
+            if xlims is not None:
+                plt.xlim(xlims)
+            plt.tight_layout()
+            leg2 = ax2.legend(fontsize=10, loc='center left',
+                              bbox_to_anchor=(1.02, 0.5),
+                              framealpha=0.9, edgecolor='black')
+            fname = f'HT_{plot_name}_end_{end_idx}'
+            plt.savefig(results_folder.joinpath(fname + '.png'), dpi=600,
+                        bbox_extra_artists=(leg2,), bbox_inches='tight')
+            plt.savefig(results_folder.joinpath(fname + '.svg'), dpi=600,
+                        bbox_extra_artists=(leg2,), bbox_inches='tight')
+            plt.show()
+
+        _print_fit_table(fit_results, start, fit_model, r2_threshold=r2_threshold,
+                         gene_length_effective=gene_length_effective,
+                         drug_diffusion_time_min=drug_diffusion_time_min)
+        return fit_results
+
+    # ── Main plot (only when fit_end_range is None) ───────────────────────────
+    fig, ax = plt.subplots(figsize=figsize, facecolor='white')
+    ax.set_facecolor('white')
+
+    # Individual trajectories
+    if show_individual_trajectories:
+        if responding_indices:
+            for i in responding_indices:
+                ax.plot(full_frames, intensities_normalized[i],
+                        linestyle='-', color='dimgray', linewidth=0.2)
+
+    ax.plot(full_frames, mean_trajectory, 'o-',
+            color=colors[0], linewidth=1, label='Experimental (mean)', markersize=6)
+    ax.fill_between(full_frames,
+                    mean_trajectory - err_trajectory,
+                    mean_trajectory + err_trajectory,
+                    color=colors[0], alpha=0.2)
+
+    # TASEP simulation overlay (if provided)
+    if mean_intensity_ssa_inh is not None and err_intensity_ssa_inh is not None:
+        _has_params = (list_param is not None
+                       and list_param[0] is not None
+                       and list_param[1] is not None)
+        legend_label_sim = (fr'Model Fit ($k_e$={np.round(list_param[1],1)}, $k_i$={np.round(list_param[0],3)})'
+                        if _has_params else 'Simulation')
+        _treatment_time_min = inhibitor_frame_index * frame_interval_sec / 60.0
+        plt.plot(time_array_min - _treatment_time_min, mean_intensity_ssa_inh, '-', color='red', linewidth=3, label=legend_label_sim)
+        plt.fill_between(time_array_min - _treatment_time_min, mean_intensity_ssa_inh - err_intensity_ssa_inh,
+                        mean_intensity_ssa_inh + err_intensity_ssa_inh, color='red', alpha=0.1)
+
+    # ── Model fit ────────────────────────────────────────────────────────
+    fit_result = None
+    if fit_model is not None and fit_end_range is None:
+        # Default fit range: from inhibitor application to end
+        start = fit_start_idx if fit_start_idx is not None else inhibitor_frame_index
+        end = fit_end_idx  # None → full array end (handled inside fit_inhibitor_model)
+
+        fit_result = fit_inhibitor_model(
+            full_frames, mean_trajectory,
+            err_data=err_trajectory,
+            model=fit_model,
+            fit_start_idx=start,
+            fit_end_idx=end,
+            runoff_fraction=runoff_fraction,
+            basal_value=_basal_value,
+        )
+
+        if fit_result is not None:
+            _end_str = fit_end_idx if fit_end_idx is not None else "end"
+            model_labels = {'linear': f'Linear Fit ({start}, {_end_str})', 'exponential': 'Exponential Fit',
+                            'heaviside': 'Heaviside Fit',
+                            'linear_extrapolated': f'Lin.Extrap. Fit ({start}, {_end_str})'}
+            label = model_labels.get(fit_result['model'], 'Fit')
+
+            t_half = fit_result['t_half']
+            t_runoff = fit_result['t_runoff']
+            frac_pct = int(fit_result['runoff_fraction'] * 100)
+
+            if show_fit:
+                _end = (fit_end_idx + 1) if fit_end_idx is not None else len(full_frames)
+                fit_x = full_frames[start:_end]
+                fit_y = fit_result['fitted_curve'][start:_end]
+                if fit_result['model'] in ('linear', 'linear_extrapolated'):
+                    positive_mask = fit_y > 0
+                    if np.any(positive_mask):
+                        last_pos = np.where(positive_mask)[0][-1] + 1
+                        fit_x = fit_x[:last_pos]
+                        fit_y = fit_y[:last_pos]
+                    else:
+                        fit_x = fit_x[:0]
+                        fit_y = fit_y[:0]
+                if len(fit_x) > 0:
+                    ax.plot(fit_x, fit_y, '-', color='red', linewidth=1.5, label=label + f'\nR²={fit_result["R2"]:.3f}')
+
+                # Dashed red extrapolation line for linear_extrapolated
+                if fit_result['model'] == 'linear_extrapolated' and len(fit_x) > 0:
+                    if np.isfinite(t_runoff) and t_runoff > fit_x[-1]:
+                        _extrap_x = np.linspace(fit_x[-1], t_runoff, 50)
+                        _extrap_y = _linear_model(_extrap_x, fit_result['params']['a (slope)'],
+                                                  fit_result['params']['b (intercept)'])
+                        ax.plot(_extrap_x, _extrap_y, '--', color='red', linewidth=1.5,
+                                label='_nolegend_')
+
+            _er = (_elongation_rate(fit_result, gene_length_effective, drug_diffusion_time_min)
+                   if gene_length_effective is not None else np.nan)
+
+            if show_runoff_time:
+                if fit_result['model'] != 'linear_extrapolated':
+                    ax.axvline(x=t_half, color='green', linestyle='--', linewidth=1,
+                               label=fr'$t_{{1/2}}$ ~ {t_half:.1f} min')
+                _elong_lbl = f'  ({_er:.2f} aa/s)' if np.isfinite(_er) else ''
+                ax.axvline(x=t_runoff, color='orange', linestyle='--', linewidth=1,
+                           label=fr'$\tau_{{ro}}$ {t_runoff:.1f} min{_elong_lbl}')
+
+            # Print fitted parameters
+            print(f'── {label} ──')
+            for k, v in fit_result['params'].items():
+                print(f'  {k}: {v:.4f}')
+            print(f'  t½:      {fit_result["t_half"]:.2f} min')
+            if fit_result['model'] == 'linear_extrapolated':
+                print(f'  τ_runoff (basal crossing): {fit_result["t_runoff"]:.2f} min')
+            else:
+                print(f'  τ_runoff (2×t½): {fit_result["t_runoff"]:.2f} min')
+            if gene_length_effective is not None and np.isfinite(_er):
+                print(f'  ke:      {_er:.4f} aa/s')
+            chi2r = fit_result['chi2_reduced']
+            print(f'  χ²_red:  {chi2r:.4f}  (dof={fit_result["dof"]})')
+            print(f'  R²:      {fit_result["R2"]:.3f}  (n={fit_result["n_data"]})')
+
+    # Treatment line at t = 0
+    if show_treatment_line:
+        ax.axvline(x=0, color='black', linestyle='--', linewidth=1,
+                    label=f'{treatment_label} Treatment')
+
+    ax.set_xlabel("Time (min)", fontdict={'size': 16, 'color': 'black'})
+    ax.set_ylabel(y_label, fontdict={'size': 16, 'color': 'black'})
+    ax.tick_params(axis='both', which='major', labelsize=16, labelcolor='black', colors='black')
+
+    for spine in ax.spines.values():
+        spine.set_color('black')
+        spine.set_linewidth(1.5)
+
+    # ── Optional dashed reference lines ───────────────────────────────
+    if show_zero_y_axis:
+        ax.axhline(y=0, color='black', linestyle='--', linewidth=0.8,
+                    label='_nolegend_')
+    if show_background_line and _bg_raw_value is not None:
+        _bg_y = 0 if remove_background_intensity else _bg_raw_value
+        ax.axhline(y=_bg_y, color='gray', linestyle=':', linewidth=1,
+                    label='_nolegend_')
+    elif show_background_line and _bg_raw_value is None:
+        if xlims is not None:
+            end_mask = full_frames <= xlims[1]
+            end_idx = int(np.sum(end_mask))
+        else:
+            end_idx = intensities_normalized.shape[1]
+        bg_start = max(0, end_idx - background_frames)
+        resp_data = intensities_normalized[responding_indices, :]
+        _bg_display = np.nanmean(resp_data[:, bg_start:end_idx])
+        ax.axhline(y=_bg_display, color='gray', linestyle=':', linewidth=1,
+                    label='_nolegend_')
+
+    plt.ylim(ylims)
+    if xlims is not None:
+        plt.xlim(xlims)
+    plt.tight_layout()
+    legend = ax.legend(fontsize=10, loc='center left', bbox_to_anchor=(1.02, 0.5),
+                       framealpha=0.9, edgecolor='black')
+    plt.savefig(results_folder.joinpath('HT_'+plot_name+'.png'), dpi=600,
+                bbox_extra_artists=(legend,), bbox_inches='tight')
+    plt.savefig(results_folder.joinpath('HT_'+plot_name+'.svg'), dpi=600,
+                bbox_extra_artists=(legend,), bbox_inches='tight')
+
+    plt.show()
+
+    return fit_result
+
+
+def plot_multiple_inhibitors(full_frames_list,
+                                intensities_normalized_list,
+                                inhibitor_frame_index,
+                                results_folder=None,
+                                plot_name='HT_multi',
+                                responding_indices_list=None,
+                                figsize=(6, 3),
+                                colors=None,
+                                legend_labels=None,
+                                use_sem=True,
+                                show_individual_trajectories=True,
+                                ylims=(0, 1.5),
+                                xlims=None,
+                                y_label='Norm. Intensity',
+                                treatment_label='Inhibitor',
+                                show_treatment_line=True,
+                                # ── Fitting parameters ──
+                                fit_model=None,
+                                fit_start_idx=None,
+                                fit_end_idx=None,
+                                show_fit=True,
+                                show_runoff_time=True,
+                                runoff_fraction=0.95,
+                                remove_background_intensity=False,
+                                background_frames=10,
+                                show_background_line=False,
+                                show_zero_y_axis=False,
+                                fit_end_range=None, r2_threshold=0.95,
+                                gene_length_effective=None, drug_diffusion_time_min=1.0):
+    """Plot multiple inhibitor datasets on the same axes with optional model fits.
+
+    Args:
+        full_frames_list: Either a single 1D array of frame times (applies to
+            all datasets) or a list of 1D arrays, one per dataset.
+        intensities_normalized_list: List of (n_cells × n_frames) arrays of
+            normalized intensities.
+        inhibitor_frame_index: Frame index at which inhibitor treatment starts.
+        results_folder: Where to save the figure (will be created if needed).
+        plot_name: Filename suffix for the saved figure.
+        responding_indices_list: Per-dataset lists of cell indices to include.
+            Defaults to all.
+        figsize: Figure size tuple.
+        colors: Matplotlib color codes for each dataset.
+        legend_labels: Text labels for each dataset's mean trace.
+        use_sem: If True, error bands show SEM; else SD.
+        show_individual_trajectories: If True, plot individual cell traces.
+        ylims: (ymin, ymax) for the plot.
+        xlims: (xmin, xmax) for the plot. If None, auto-scaled.
+        fit_model: Model to fit per dataset: 'linear', 'exponential',
+            'heaviside', or None.
+        fit_start_idx: Start index for fitting range. Defaults to
+            inhibitor_frame_index.
+        fit_end_idx: End index for fitting range (inclusive). Defaults to
+            last frame.
+        show_fit: If True (default), overlay the fitted curve on the plot.
+        show_runoff_time: If True (default), draw vertical lines for t½ and
+            τ_runoff.
+        runoff_fraction: Fraction of total decay for run-off time definition
+            (default 0.95).
+        remove_background_intensity: If True, subtract background intensity
+            and rescale each trace to [0, 1]. Default False.
+        background_frames: Number of frames at the end used to estimate
+            background intensity. Default 10.
+        show_background_line: If True, draw a horizontal dashed line at the
+            estimated background intensity level per dataset. Default False.
+        show_zero_y_axis: If True, draw a horizontal dashed line at y = 0.
+        fit_end_range: When provided as (start, end), performs a sweep per
+            dataset. Only meaningful with fit_model='linear'. Endpoint values
+            are automatically clamped to the available data length.
+
+    Returns:
+        When fit_end_range is None: list of fit result dicts per dataset.
+        When fit_end_range is set: list of fit results lists per dataset,
+        each element containing 'fit_end_idx' and 'fit_result'.
+    """
+    # Prepare output folder
+    if results_folder is None:
+        results_folder = Path(current_dir).joinpath('results_HT')
+    results_folder.mkdir(parents=True, exist_ok=True)
+
+    # Set up figure
+    fig, ax = plt.subplots(figsize=figsize, facecolor='white')
+    ax.set_facecolor('white')
+
+    # Default color cycle
+    if colors is None:
+        colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+    fit_results = []
+
+    # Loop over each dataset
+    for idx, intensities in enumerate(intensities_normalized_list):
+        # Select frames array
+        frames = (full_frames_list[idx]
+                  if isinstance(full_frames_list, (list, tuple))
+                  else full_frames_list)
+        color = colors[idx % len(colors)]
+
+        # Select responding cell indices
+        resp_idx = (responding_indices_list[idx]
+                    if (responding_indices_list and idx < len(responding_indices_list))
+                    else list(range(intensities.shape[0])))
+
+        # ── Background removal and 0-1 rescaling ────────────────
+        _bg_raw_value = None
+        if xlims is not None:
+            end_mask = frames <= xlims[1]
+            _end_idx = int(np.sum(end_mask))
+        else:
+            _end_idx = intensities.shape[1]
+        _bg_start = max(0, _end_idx - background_frames)
+
+        if remove_background_intensity:
+            intensities = intensities.copy()
+            # Estimate background from the MEAN trajectory (robust to per-trace noise)
+            resp_data = intensities[resp_idx, :]
+            mean_for_bg = np.nanmean(resp_data[:, _bg_start:_end_idx])
+            _bg_raw_value = mean_for_bg
+            intensities = intensities - mean_for_bg
+            # Rescale so the mean pre-treatment intensity = 1
+            mean_pre = np.nanmean(resp_data[:, :inhibitor_frame_index] - mean_for_bg)
+            if mean_pre != 0:
+                intensities = intensities / mean_pre
+
+        if show_background_line:
+            if _bg_raw_value is not None:
+                # After rescaling, background maps to 0
+                _lbl = legend_labels[idx] if legend_labels else f'Dataset {idx}'
+                ax.axhline(y=0, color=color, linestyle=':', linewidth=1,
+                            label=f'BG ({_lbl}: {_bg_raw_value:.1f} raw)')
+            else:
+                # No rescaling — compute and show at its original level
+                resp_data = intensities[resp_idx, :]
+                _bg_display = np.nanmean(resp_data[:, _bg_start:_end_idx])
+                _lbl = legend_labels[idx] if legend_labels else f'Dataset {idx}'
+                ax.axhline(y=_bg_display, color=color, linestyle=':', linewidth=1,
+                            label=f'BG ({_lbl}) = {_bg_display:.1f}')
+
+        # Plot individual trajectories
+        if show_individual_trajectories:
+            for i in resp_idx:
+                ax.plot(frames, intensities[i],
+                        linestyle='-', color=color,
+                        linewidth=0.3, alpha=0.4)
+
+        # Compute mean & error (NaN-safe for artifact-removed frames)
+        data = intensities[resp_idx, :]
+        mean_traj = np.nanmean(data, axis=0)
+        std_traj  = np.nanstd(data, axis=0)
+        if use_sem:
+            n_valid = np.sum(np.isfinite(data), axis=0)
+            n_valid = np.maximum(n_valid, 1)
+            err_traj = std_traj / np.sqrt(n_valid)
+        else:
+            err_traj = std_traj
+
+        # Determine legend text
+        label_text = (legend_labels[idx]
+                      if (legend_labels and idx < len(legend_labels))
+                      else f'Dataset {idx+1}')
+
+        # Plot mean ± error band
+        ax.plot(frames, mean_traj, 'o-', color=color,
+                linewidth=1, markersize=6,
+                label=label_text)
+        ax.fill_between(frames,
+                        mean_traj - err_traj,
+                        mean_traj + err_traj,
+                        color=color, alpha=0.2)
+
+        # ── Compute basal value for linear_extrapolated ────────────
+        _ds_basal_value = None
+        if fit_model == 'linear_extrapolated':
+            if remove_background_intensity:
+                _ds_basal_value = 0.0
+            else:
+                if xlims is not None:
+                    _basal_end = int(np.sum(frames <= xlims[1]))
+                else:
+                    _basal_end = len(mean_traj)
+                _basal_start = max(0, _basal_end - background_frames)
+                _ds_basal_value = float(np.nanmean(mean_traj[_basal_start:_basal_end]))
+
+        # ── Model fit ────────────────────────────────────────────────
+        if fit_model is not None and fit_end_range is None:
+            start = fit_start_idx if fit_start_idx is not None else inhibitor_frame_index
+            end = fit_end_idx
+
+            fit_result = fit_inhibitor_model(
+                frames, mean_traj,
+                err_data=err_traj,
+                model=fit_model,
+                fit_start_idx=start,
+                fit_end_idx=end,
+                runoff_fraction=runoff_fraction,
+                basal_value=_ds_basal_value,
+            )
+
+            if fit_result is not None:
+                _end_str = fit_end_idx if fit_end_idx is not None else "end"
+                model_labels = {'linear': f'Linear Fit ({start}, {_end_str})', 'exponential': 'Exponential Fit',
+                                'heaviside': 'Heaviside Fit',
+                                'linear_extrapolated': f'Lin.Extrap. Fit ({start}, {_end_str})'}
+                fit_label = model_labels.get(fit_result['model'], 'Fit')
+                t_half = fit_result['t_half']
+                t_runoff = fit_result['t_runoff']
+                frac_pct = int(runoff_fraction * 100)
+
+                if show_fit:
+                    _end = (fit_end_idx + 1) if fit_end_idx is not None else len(frames)
+                    fit_x = frames[start:_end]
+                    fit_y = fit_result['fitted_curve'][start:_end]
+                    if fit_result['model'] in ('linear', 'linear_extrapolated'):
+                        positive_mask = fit_y > 0
+                        if np.any(positive_mask):
+                            last_pos = np.where(positive_mask)[0][-1] + 1
+                            fit_x = fit_x[:last_pos]
+                            fit_y = fit_y[:last_pos]
+                        else:
+                            fit_x = fit_x[:0]
+                            fit_y = fit_y[:0]
+                    if len(fit_x) > 0:
+                        ax.plot(fit_x, fit_y, '-',
+                                color='red', linewidth=1.5,
+                                label=f'{label_text} {fit_label}')
+
+                    # Dashed red extrapolation line for linear_extrapolated
+                    if fit_result['model'] == 'linear_extrapolated' and len(fit_x) > 0:
+                        if np.isfinite(t_runoff) and t_runoff > fit_x[-1]:
+                            _extrap_x = np.linspace(fit_x[-1], t_runoff, 50)
+                            _extrap_y = _linear_model(_extrap_x, fit_result['params']['a (slope)'],
+                                                      fit_result['params']['b (intercept)'])
+                            ax.plot(_extrap_x, _extrap_y, '--', color='red', linewidth=1.5,
+                                    label='_nolegend_')
+
+                if show_runoff_time:
+                    _ro_label = 'basal' if fit_result['model'] == 'linear_extrapolated' else '2×t½'
+                    if fit_result['model'] != 'linear_extrapolated':
+                        ax.axvline(x=t_half, color=color, linestyle=':', linewidth=1,
+                                   label=f'{label_text} t½ ~ {t_half:.1f} min')
+                    ax.axvline(x=t_runoff, color=color, linestyle='--', linewidth=1,
+                               label=f'{label_text} τ ({_ro_label}) ~ {t_runoff:.1f} min')
+
+                # Print fitted parameters
+                print(f'── {label_text}: {fit_label} ──')
+                for k, v in fit_result['params'].items():
+                    print(f'  {k}: {v:.4f}')
+                print(f'  t½:      {fit_result["t_half"]:.2f} min')
+                if fit_result['model'] == 'linear_extrapolated':
+                    print(f'  τ_runoff (basal crossing): {fit_result["t_runoff"]:.2f} min')
+                else:
+                    print(f'  τ_runoff (2×t½): {fit_result["t_runoff"]:.2f} min')
+                chi2r = fit_result['chi2_reduced']
+                print(f'  χ²_red:  {chi2r:.4f}  (dof={fit_result["dof"]})')
+                print(f'  R²:      {fit_result["R2"]:.3f}  (n={fit_result["n_data"]})')
+
+            fit_results.append(fit_result)
+        else:
+            fit_results.append(None)
+
+    # Plot treatment line at zero
+    if show_treatment_line:
+        ax.axvline(x=0, color='black', linestyle='--', linewidth=1,
+                    label=treatment_label)
+
+    # Optional horizontal reference lines
+    if show_zero_y_axis:
+        ax.axhline(y=0, color='black', linestyle='--', linewidth=0.8,
+                    label='y = 0')
+
+    # Styling
+    ax.set_xlabel("Time (min)", fontdict={'size': 16, 'color': 'black'})
+    ax.set_ylabel(y_label, fontdict={'size': 16, 'color': 'black'})
+    ax.tick_params(axis='both', which='major', labelsize=16, labelcolor='black', colors='black')
+    for spine in ax.spines.values():
+        spine.set_color('black')
+        spine.set_linewidth(1.5)
+    ax.set_ylim(*ylims)
+    if xlims is not None:
+        ax.set_xlim(*xlims)
+
+    legend = ax.legend(fontsize=10, loc='center left', bbox_to_anchor=(1.02, 0.5),
+                       framealpha=0.9, edgecolor='black')
+    plt.tight_layout()
+
+    # Save & show
+    plt.savefig(results_folder.joinpath(f'HT_{plot_name}.png'), dpi=600,
+                bbox_extra_artists=(legend,), bbox_inches='tight')
+    plt.savefig(results_folder.joinpath(f'HT_{plot_name}.svg'), dpi=600,
+                bbox_extra_artists=(legend,), bbox_inches='tight')
+    plt.show()
+
+    # ── AIC sweep (per dataset) ───────────────────────────────────────────────
+    if fit_end_range is not None:
+        if fit_model not in ('linear', 'linear_extrapolated'):
+            print(f'Warning: fit_end_range is only supported with fit_model="linear" '
+                  f'or "linear_extrapolated". '
+                  f'Ignoring fit_end_range (got fit_model={fit_model!r}).')
+            return fit_results
+
+        start = fit_start_idx if fit_start_idx is not None else inhibitor_frame_index
+        all_fit_results = []
+
+        for ds_idx, intensities in enumerate(intensities_normalized_list):
+            frames = (full_frames_list[ds_idx]
+                      if isinstance(full_frames_list, (list, tuple))
+                      else full_frames_list)
+            color = colors[ds_idx % len(colors)]
+            resp_idx = (responding_indices_list[ds_idx]
+                        if (responding_indices_list
+                            and ds_idx < len(responding_indices_list))
+                        else list(range(intensities.shape[0])))
+            ds_label = (legend_labels[ds_idx]
+                        if (legend_labels and ds_idx < len(legend_labels))
+                        else f'Dataset {ds_idx+1}')
+
+            # Re-compute mean/err for this dataset (mirrors the main loop above)
+            _int = intensities.copy()
+            _bg_raw_value = None  # per-dataset; avoids leakage from the main loop
+            if remove_background_intensity:
+                if xlims is not None:
+                    _end_idx = int(np.sum(frames <= xlims[1]))
+                else:
+                    _end_idx = _int.shape[1]
+                _bg_start = max(0, _end_idx - background_frames)
+                _resp_data = _int[resp_idx, :]
+                _mean_bg = np.nanmean(_resp_data[:, _bg_start:_end_idx])
+                _bg_raw_value = _mean_bg
+                _int = _int - _mean_bg
+                _mean_pre = np.nanmean(_resp_data[:, :inhibitor_frame_index] - _mean_bg)
+                if _mean_pre != 0:
+                    _int = _int / _mean_pre
+
+            _data = _int[resp_idx, :]
+            _mean_traj = np.nanmean(_data, axis=0)
+            _std_traj = np.nanstd(_data, axis=0)
+            if use_sem:
+                _n_valid = np.maximum(np.sum(np.isfinite(_data), axis=0), 1)
+                _err_traj = _std_traj / np.sqrt(_n_valid)
+            else:
+                _err_traj = _std_traj
+
+            # Compute basal value for linear_extrapolated (per dataset)
+            _sweep_basal = None
+            if fit_model == 'linear_extrapolated':
+                if remove_background_intensity:
+                    _sweep_basal = 0.0
+                else:
+                    if xlims is not None:
+                        _sb_end = int(np.sum(frames <= xlims[1]))
+                    else:
+                        _sb_end = len(_mean_traj)
+                    _sb_start = max(0, _sb_end - background_frames)
+                    _sweep_basal = float(np.nanmean(_mean_traj[_sb_start:_sb_end]))
+
+            n_frames = len(frames)
+            end_min = min(fit_end_range[0], n_frames - 1)
+            end_max = min(fit_end_range[1], n_frames - 1)
+
+            fit_results = []
+            for end_idx in range(end_min, end_max + 1):
+                if end_idx <= start:
+                    continue
+                fr = fit_inhibitor_model(
+                    frames, _mean_traj,
+                    err_data=_err_traj,
+                    model=fit_model,
+                    fit_start_idx=start,
+                    fit_end_idx=end_idx,
+                    runoff_fraction=runoff_fraction,
+                    basal_value=_sweep_basal,
+                )
+                _er = (_elongation_rate(fr, gene_length_effective, drug_diffusion_time_min)
+                       if (fr is not None and gene_length_effective is not None) else np.nan)
+                fit_results.append({'fit_end_idx': end_idx, 'fit_result': fr, 'elong_rate': _er})
+
+            # Per-endpoint plots for this dataset
+            for r in fit_results:
+                end_idx = r['fit_end_idx']
+                fr = r['fit_result']
+                fig2, ax2 = plt.subplots(figsize=figsize, facecolor='white')
+                ax2.set_facecolor('white')
+                ax2.plot(frames, _mean_traj, 'o-', color=color,
+                         linewidth=1, label=ds_label, markersize=6)
+                ax2.fill_between(frames,
+                                 _mean_traj - _err_traj,
+                                 _mean_traj + _err_traj,
+                                 color=color, alpha=0.2)
+                if show_treatment_line:
+                    ax2.axvline(x=0, color='black', linestyle='--', linewidth=1,
+                                label=f'{treatment_label} Treatment')
+                if fr is not None:
+                    # Crop to the actual fitting window [start : end_idx+1]
+                    fit_x = frames[start:end_idx + 1]
+                    fit_y = fr['fitted_curve'][start:end_idx + 1]
+                    positive_mask = fit_y > 0
+                    if np.any(positive_mask):
+                        lp = np.where(positive_mask)[0][-1] + 1
+                        fit_x = fit_x[:lp]
+                        fit_y = fit_y[:lp]
+                    else:
+                        fit_x = fit_x[:0]
+                        fit_y = fit_y[:0]
+                    if len(fit_x) > 0:
+                        _fit_label = 'Lin.Extrap. Fit' if fit_model == 'linear_extrapolated' else 'Linear Fit'
+                        ax2.plot(fit_x, fit_y, '-', color='red', linewidth=1.5,
+                                 label=f'{_fit_label} ({start}, {end_idx})\nR²={fr["R2"]:.3f}')
+
+                    # Dashed red extrapolation line for linear_extrapolated
+                    if fr['model'] == 'linear_extrapolated' and len(fit_x) > 0:
+                        _t_ro = fr['t_runoff']
+                        if np.isfinite(_t_ro) and _t_ro > fit_x[-1]:
+                            _extrap_x = np.linspace(fit_x[-1], _t_ro, 50)
+                            _extrap_y = _linear_model(_extrap_x, fr['params']['a (slope)'],
+                                                      fr['params']['b (intercept)'])
+                            ax2.plot(_extrap_x, _extrap_y, '--', color='red', linewidth=1.5,
+                                     label='_nolegend_')
+
+                    if show_runoff_time and np.isfinite(fr['t_half']) and np.isfinite(fr['t_runoff']):
+                        _er = r.get('elong_rate', np.nan)
+                        _elong_lbl = f'  ({_er:.2f} aa/s)' if np.isfinite(_er) else ''
+                        if fr['model'] != 'linear_extrapolated':
+                            ax2.axvline(x=fr['t_half'], color='green', linestyle='--', linewidth=1,
+                                        label=fr'$t_{{1/2}}$ ~ {fr["t_half"]:.1f} min')
+                        ax2.axvline(x=fr['t_runoff'], color='orange', linestyle='--', linewidth=1,
+                                    label=fr'$\tau_{{runoff}}$ ~ {fr["t_runoff"]:.1f} min{_elong_lbl}')
+                if show_background_line and _bg_raw_value is not None:
+                    _bg_y = 0 if remove_background_intensity else _bg_raw_value
+                    ax2.axhline(y=_bg_y, color='gray', linestyle=':', linewidth=1,
+                                label='_nolegend_')
+                ax2.set_xlabel('Time (min)', fontdict={'size': 16, 'color': 'black'})
+                ax2.set_ylabel(y_label, fontdict={'size': 16, 'color': 'black'})
+                ax2.tick_params(axis='both', which='major', labelsize=16,
+                                labelcolor='black', colors='black')
+                for spine in ax2.spines.values():
+                    spine.set_color('black')
+                    spine.set_linewidth(1.5)
+                plt.ylim(ylims)
+                if xlims is not None:
+                    plt.xlim(xlims)
+                plt.tight_layout()
+                leg2 = ax2.legend(fontsize=10, loc='center left',
+                                  bbox_to_anchor=(1.02, 0.5),
+                                  framealpha=0.9, edgecolor='black')
+                fname = f'HT_{plot_name}_ds{ds_idx}_end_{end_idx}'
+                plt.savefig(results_folder.joinpath(fname + '.png'), dpi=600,
+                            bbox_extra_artists=(leg2,), bbox_inches='tight')
+                plt.savefig(results_folder.joinpath(fname + '.svg'), dpi=600,
+                            bbox_extra_artists=(leg2,), bbox_inches='tight')
+                plt.show()
+
+            print(f'\n── {ds_label} ──')
+            _print_fit_table(fit_results, start, fit_model, r2_threshold=r2_threshold,
+                             gene_length_effective=gene_length_effective,
+                             drug_diffusion_time_min=drug_diffusion_time_min)
+            all_fit_results.append(fit_results)
+
+        return all_fit_results
+
+    return fit_results
+
+
+def process_inhibitor_data(data_dir, inhibitor_frame_index, substring_in_data_dir='', selected_field='spot_int_ch_0', use_sem=True, show_summary=True, max_percentage_threshold_after_treatment=None,
+                     frame_interval_sec=60, simulation_dna_sequence=None, inhibitor_delay_time_seconds=60, list_tag_sequences=None, ki_simulation=0.04, ke_simulation=4.5,
+                     normalization_method='mean', percentile_range=(5, 95), verbose=False,
+                     remove_frame_at_inhibitor_application=False):
+    """Process inhibitor runoff experiment data.
+
+    Args:
+        data_dir: Path to directory containing results subfolders with
+            tracking CSV files.
+        inhibitor_frame_index: Frame index at which treatment starts.
+        substring_in_data_dir: Filter string to select specific subfolders.
+        selected_field: Column name for intensity values
+            (e.g., 'spot_int_ch_0').
+        use_sem: If True, use SEM for error bars; else use SD.
+        show_summary: If True, print summary statistics.
+        max_percentage_threshold_after_treatment: Threshold (0-1) to classify
+            responding vs non-responding cells.
+        frame_interval_sec: Time interval between frames in seconds.
+            Default 60 (1 min). Use 20 for 20-second intervals, etc.
+        simulation_dna_sequence: DNA sequence for TASEP simulation (optional).
+        inhibitor_delay_time_seconds: Delay time for drug to enter cell in
+            simulation.
+        list_tag_sequences: Tag sequences for probe detection.
+        ki_simulation: Initiation rate for simulation.
+        ke_simulation: Elongation rate for simulation.
+        normalization_method: 'mean' (default) divides by pre-treatment mean
+            intensity (values start ~1.0). 'minmax' scales each cell's
+            trajectory to [0, 1] range. 'percentile' scales using percentile
+            bounds (robust to outliers). None: no normalization.
+        percentile_range: Percentile bounds for 'percentile' method.
+            Default (5, 95). Use (1, 99) for wider range.
+        verbose: If True, print processing details and summary statistics.
+            Set to False to suppress all print output.
+        remove_frame_at_inhibitor_application: If True, replaces the frame at
+            inhibitor application with NaN to remove the focus artifact
+            (default False). During live-cell experiments, adding the drug
+            mechanically perturbs the sample, causing a transient intensity
+            artifact. Setting this to True replaces that frame with NaN.
+
+    Returns:
+        Tuple of (responding_indices, time_min_recentered,
+        intensities_normalized, array_particles, list_simulation_parameters,
+        time_array_sim_min, mean_intensity_ssa_inh, err_intensity_ssa_inh).
+    """
+
+    list_dataframes = []
+    subfolders = [folder for folder in data_dir.iterdir() if folder.is_dir()]
+    subfolders = [folder for folder in subfolders if 'results_' in folder.name and substring_in_data_dir in folder.name]
+    if verbose:
+        print('List of processed dataframes:')
+    for subfolder in subfolders:
+        files = [f for f in subfolder.iterdir() if f.is_file() and 'tracking_' in f.name and f.suffix == '.csv']
+        if not files:
+            if verbose:
+                print(f'Warning: No tracking CSV found in {subfolder.name}, skipping.')
+            continue
+        dfs = pd.read_csv(files[0])
+        list_dataframes.append(dfs)
+        if verbose:
+            print('subfolder:', subfolder)
+
+    # detect the maximum frame number across all dataframes
+    max_frame = 0
+    for df in list_dataframes:
+        max_frame = max(max_frame, df['frame'].max())
+
+    # terminate the program if the maximum frame is less than 1
+    if max_frame < 10:
+        if verbose:
+            print('No dataframes found with frame number greater than 10 frames.')
+        return None, None, None, None, None, None, None, None
+
+    full_frames = np.arange(0, max_frame)
+    frame_indices = np.arange(0, max_frame + 1)  # Frame indices for processing (inclusive of max_frame)
+    array_particles = np.zeros((len(list_dataframes), len(frame_indices)))
+    average_intensity = np.zeros((len(list_dataframes), len(frame_indices)))
+    intensities_normalized = np.zeros((len(list_dataframes), len(frame_indices)))
+    average_molecules_before_treatment = np.zeros(len(list_dataframes))
+    for i, df in enumerate(list_dataframes):
+        # Group by 'frame' and count unique particles
+        particle_counts_per_frame = df.groupby('frame')['particle'].nunique()
+        sum_intensities_per_frame = df.groupby('frame')[selected_field].sum()
+        # Re-index to include frames with no particles (fill missing with 0)
+        particle_counts_per_frame = particle_counts_per_frame.reindex(frame_indices, fill_value=0).values
+        sum_intensities_per_frame = sum_intensities_per_frame.reindex(frame_indices, fill_value=0).values
+        # Ensure the lengths match frame_indices
+        if len(particle_counts_per_frame) > len(frame_indices):
+            particle_counts_per_frame = particle_counts_per_frame[:len(frame_indices)]
+            sum_intensities_per_frame = sum_intensities_per_frame[:len(frame_indices)]
+        # Compute raw intensities (always use 'mean' per-cell first)
+        intensities_normalized_before_treatment_intensity, average_intensity_with_respect_number_particles, average_particles_before_treatment = calculate_intensity(
+            particle_counts_per_frame, sum_intensities_per_frame, inhibitor_frame_index,
+            normalization_method=normalization_method
+        )
+        # Store in array
+        normalized_particles, _ = calculate_number_of_particles_per_frame(particle_counts_per_frame, inhibitor_frame_index)
+        array_particles[i] = normalized_particles
+        average_intensity[i] = average_intensity_with_respect_number_particles
+        intensities_normalized[i] = intensities_normalized_before_treatment_intensity
+        average_molecules_before_treatment[i] = average_particles_before_treatment
+
+    # Apply global normalization across all cells (after the loop)
+    if normalization_method == 'minmax':
+        global_min = intensities_normalized.min()
+        global_max = intensities_normalized.max()
+        if global_max - global_min > 0:
+            intensities_normalized = (intensities_normalized - global_min) / (global_max - global_min)
+        if verbose:
+            print(f'Global minmax normalization applied (min={global_min:.4f}, max={global_max:.4f})')
+    elif normalization_method == 'percentile':
+        global_low = np.percentile(intensities_normalized, percentile_range[0])
+        global_high = np.percentile(intensities_normalized, percentile_range[1])
+        if global_high - global_low > 0:
+            intensities_normalized = (intensities_normalized - global_low) / (global_high - global_low)
+        if verbose:
+            print(f'Global percentile normalization applied (P{percentile_range[0]}={global_low:.4f}, P{percentile_range[1]}={global_high:.4f})')
+
+    # ── Remove artifact frame at inhibitor application ────────────────
+    # During live-cell experiments, adding the inhibitor (e.g., pipetting
+    # harringtonine into the dish) mechanically perturbs the sample,
+    # causing cells to transiently go out of focus. This creates an
+    # artificial intensity dip at the treatment frame that does not
+    # reflect actual translational run-off. Replacing this frame with
+    # NaN removes the artifact while preserving the time axis, so the
+    # mean, SEM, and model fits are not biased by the focus disturbance.
+    if remove_frame_at_inhibitor_application:
+        intensities_normalized[:, inhibitor_frame_index] = np.nan
+        array_particles[:, inhibitor_frame_index] = np.nan
+        if verbose:
+            print(f'Removed frame at inhibitor application '
+                  f'(index {inhibitor_frame_index}) → replaced with NaN')
+
+    treatment_start_index = inhibitor_frame_index #np.argmin(np.abs(full_frames - inhibitor_frame_index))
+    non_responding_indices = []  # average post-treatment is not decreasing below the threshold
+    responding_indices = []
+    # Classify each trajectory
+    if max_percentage_threshold_after_treatment is not None:
+        for i, trajectory in enumerate(intensities_normalized):
+            baseline = np.nanmean(trajectory[:treatment_start_index])
+            threshold = max_percentage_threshold_after_treatment * baseline
+            avg_post_treatment = np.nanmean(trajectory[treatment_start_index:])
+            if avg_post_treatment >= threshold:
+                non_responding_indices.append(i)
+            else:
+                responding_indices.append(i)
+    else:
+        # print a warning if the threshold is not provided
+        if verbose:
+            print('Warning: No threshold provided. All trajectories are considered responding.')
+        # if no threshold is provided, all trajectories are considered responding
+        responding_indices = list(range(len(intensities_normalized)))
+        non_responding_indices = []
+
+    if show_summary and verbose:
+        # report percentage of non-responding trajectories
+        print('---------Summary: ----------')
+        print('\n----------Cells------------')
+        # report total cells
+        total_cells = len(intensities_normalized)
+        print('total_cells: ', total_cells)
+        number_of_responding_cells = len(responding_indices)
+        print('number_of_responding_cells: ', number_of_responding_cells)
+        number_of_non_responding_cells = len(non_responding_indices)
+        print('number_of_non_responding_cells: ', number_of_non_responding_cells)
+        percentage_non_responding_cells = number_of_non_responding_cells / (number_of_responding_cells + number_of_non_responding_cells) * 100
+        print('percentage_non_responding_cells: ', np.round(percentage_non_responding_cells,1))
+        print('\n----------RNA------------')
+        total_molecules_before_treatment = average_molecules_before_treatment.sum()
+        print('average_total_molecules_before_treatment: ', total_molecules_before_treatment)
+        average_molecules_before_treatment_responding = average_molecules_before_treatment[responding_indices].sum()
+        print('average_molecules_before_treatment_responding: ', np.round(average_molecules_before_treatment_responding,1))
+        average_molecules_before_treatment_non_responding = average_molecules_before_treatment[non_responding_indices].sum()
+        print('average_molecules_before_treatment_non_responding: ', average_molecules_before_treatment_non_responding)
+
+    # Convert frame indices to time in minutes, centered on treatment
+    time_min_recentered = (frame_indices - inhibitor_frame_index) * frame_interval_sec / 60.0
+
+
+    if simulation_dna_sequence is not None:
+        if list_tag_sequences is None:
+            list_tag_sequences = [HA_TAG]
+        list_simulation_parameters = [ki_simulation, ke_simulation]
+        ########################## Modeling  #########################################
+        #inhibitor_delay_time_seconds = 60 # seconds. According to Tanenbaum paper 2016.
+        number_repetitions = 100
+        burnin_time = 2000
+        #t_max = 360*5 #timePerturbationApplication + 25*60  # Maximum time
+        t_max = max_frame * frame_interval_sec  # Total experiment time in seconds
+        step_size_in_sec = 1
+        time_array = np.arange(0, t_max, step_size_in_sec)
+        #plot_name, rna, first_probe_position_vector, gene_length,list_param = model_and_data_selection(processed_data)
+        _, rna, gene_length, first_probe_position_vector, second_probe_position_vector = read_gene_sequence_return_probes(simulation_dna_sequence, min_protein_length=50, list_tag_sequences=list_tag_sequences)
+        ke = calculate_codon_elongation_rates (rna, global_elongation_rate=list_simulation_parameters[1],)
+        timePerturbationApplication = inhibitor_frame_index * frame_interval_sec + inhibitor_delay_time_seconds
+        evaluatingInhibitor = 1
+        ssa_array = simulate_TASEP_SSA(list_simulation_parameters[0],
+                                    ke,
+                                    gene_length,
+                                    t_max,
+                                    time_interval_in_seconds=step_size_in_sec,
+                                    number_repetitions=number_repetitions,
+                                    first_probe_position_vector=first_probe_position_vector,
+                                    timePerturbationApplication = timePerturbationApplication,
+                                    inhibitor_effectiveness=95,
+                                    evaluatingInhibitor=evaluatingInhibitor,
+                                    burnin_time=burnin_time,
+                                    constant_elongation_rate=list_simulation_parameters[1],
+                                    fast_output=True)[2]
+        # downsample time array and simulation output to match experimental frame interval
+        downsample_factor = int(frame_interval_sec)  # e.g., 60 for 1 min, 20 for 20 sec
+        time_array_downsampled = time_array[::downsample_factor]
+        ssa_array_downsampled = ssa_array[:, ::downsample_factor]
+        # plotting
+        time_array_sim_min = time_array_downsampled/60
+        normalized_data = np.zeros_like(ssa_array_downsampled)
+        for i in range(ssa_array_downsampled.shape[0]):
+            mean_before_treatment = np.mean(ssa_array_downsampled[i,:inhibitor_frame_index])
+            normalized_data[i] = ssa_array_downsampled[i]/mean_before_treatment
+        mean_intensity_ssa_inh = np.mean(normalized_data, axis=0)
+        if use_sem:
+            err_intensity_ssa_inh = np.std(normalized_data, axis=0) / np.sqrt(normalized_data.shape[0])
+        else:
+            err_intensity_ssa_inh = np.std(normalized_data, axis=0) #/np.sqrt(normalized_data.shape[0])
+    else:
+        mean_intensity_ssa_inh = None
+        err_intensity_ssa_inh = None
+        time_array_sim_min = None
+        list_simulation_parameters = [None, None]
+
+    return responding_indices, time_min_recentered, intensities_normalized, array_particles, list_simulation_parameters, time_array_sim_min, mean_intensity_ssa_inh, err_intensity_ssa_inh
+
+
+def simulate_inhibitor(gene_sequence, ki=0.04, ke_global=5, use_sem=False, max_frame=20,
+                       list_tag_sequences=None, inhibitor_frame=5, inhibitor_delay_seconds=60):
+    """Run a TASEP simulation for a gene sequence with inhibitor treatment.
+
+    Simulation-only function (no experimental data). Uses codon-usage-aware
+    elongation rates and supports multi-tag probe detection.
+
+    Args:
+        gene_sequence: DNA sequence to simulate.
+        ki: Initiation rate.
+        ke_global: Global elongation rate.
+        use_sem: If True, error bars use SEM; else SD.
+        max_frame: Maximum number of frames (minutes) to simulate.
+        list_tag_sequences: Tag sequences for probe detection.
+            Defaults to [HA_TAG, GFP_TAG].
+        inhibitor_frame: Frame (minute) at which inhibitor treatment starts.
+        inhibitor_delay_seconds: Delay time for drug to enter cell in
+            simulation (seconds).
+
+    Returns:
+        Tuple of (time_array_min, mean_intensity_ssa_inh,
+        err_intensity_ssa_inh).
+    """
+    if list_tag_sequences is None:
+        list_tag_sequences = [HA_TAG, GFP_TAG]
+
+    # reading the gene sequence
+    protein, rna, _, indexes_tags, _, _ ,_ = read_sequence(seq=gene_sequence, min_protein_length=50, TAG=list_tag_sequences)
+    gene_length = len(protein)
+    tag_positions_first_probe_vector = indexes_tags[0]
+    first_probe_position_vector = create_probe_vector(tag_positions_first_probe_vector, gene_length)
+
+    # second probe vector.
+    tag_positions_second_probe_vector = indexes_tags[1]
+    second_probe_position_vector = create_probe_vector(tag_positions_second_probe_vector, gene_length)
+
+    # print the first and second probe positions
+    print(f"First probe positions: {tag_positions_first_probe_vector}")
+    print(f"Second probe positions: {tag_positions_second_probe_vector}")
+
+    ke_codon_dependent = calculate_codon_elongation_rates(rna, global_elongation_rate=ke_global)
+
+    full_frames = np.arange(0, max_frame)
+    full_frames = full_frames - inhibitor_frame
+
+    ########################## Modeling  #########################################
+    number_repetitions = 100
+    burnin_time = 2000
+    t_max = max_frame * 60
+    step_size_in_sec = 1
+    time_array = np.arange(0, t_max, step_size_in_sec)
+    timePerturbationApplication = inhibitor_frame * 60 + inhibitor_delay_seconds
+    evaluatingInhibitor = 1
+    ssa_array = simulate_TASEP_SSA(ki,
+                                ke_codon_dependent,
+                                gene_length,
+                                t_max,
+                                time_interval_in_seconds=step_size_in_sec,
+                                number_repetitions=number_repetitions,
+                                first_probe_position_vector=first_probe_position_vector,
+                                timePerturbationApplication=timePerturbationApplication,
+                                inhibitor_effectiveness=95,
+                                evaluatingInhibitor=evaluatingInhibitor,
+                                burnin_time=burnin_time,
+                                constant_elongation_rate=None,  # codon-usage aware
+                                fast_output=False)[2]
+    # downsample time array and simulation output to 1 minute resolution.
+    time_array_downsampled = time_array[::60]
+    ssa_array_downsampled = ssa_array[:, ::60]
+    # plotting
+    time_array_min = time_array_downsampled / 60
+    normalized_data = np.zeros_like(ssa_array_downsampled)
+    for i in range(ssa_array_downsampled.shape[0]):
+        mean_before_treatment = np.mean(ssa_array_downsampled[i, :inhibitor_frame])
+        normalized_data[i] = ssa_array_downsampled[i] / mean_before_treatment
+    mean_intensity_ssa_inh = np.mean(normalized_data, axis=0)
+
+    if use_sem:
+        err_intensity_ssa_inh = np.std(normalized_data, axis=0) / np.sqrt(normalized_data.shape[0])
+    else:
+        err_intensity_ssa_inh = np.std(normalized_data, axis=0)
+
+    return time_array_min, mean_intensity_ssa_inh, err_intensity_ssa_inh
+
+
+def plot_inhibitor_simulation(legend_label, time_array_min, mean_intensity_ssa_inh, err_intensity_ssa_inh,
+                              figsize=(6, 3), ylims=(0, 1.4), inhibitor_frame=5):
+    """Plot a single inhibitor simulation result.
+
+    Args:
+        legend_label: Label for the simulation trace.
+        time_array_min: Time array in minutes.
+        mean_intensity_ssa_inh: Mean normalized intensity from simulation.
+        err_intensity_ssa_inh: Error (SD or SEM) of normalized intensity.
+        figsize: Figure size.
+        ylims: Y-axis limits.
+        inhibitor_frame: Frame (minute) at which inhibitor treatment starts
+            (for time offset).
+    """
+    fig, ax = plt.subplots(figsize=figsize, facecolor='white')
+    ax.set_facecolor('white')
+
+    # Plotting the model
+    plt.plot(time_array_min - inhibitor_frame, mean_intensity_ssa_inh, '-', color='red', linewidth=4, label=legend_label)
+    plt.fill_between(time_array_min - inhibitor_frame, mean_intensity_ssa_inh - err_intensity_ssa_inh,
+                    mean_intensity_ssa_inh + err_intensity_ssa_inh, color='red', alpha=0.1)
+
+    # Plot the inhibitor frame as a vertical line at x=0
+    ax.axvline(x=0, color='black', linestyle='--', linewidth=1)
+
+    ax.set_xlabel("Time (min)", fontdict={'size': 16})
+    ax.set_ylabel("Norm. Intensity", fontdict={'size': 16})
+    ax.tick_params(axis='both', which='major', labelsize=12)
+
+    for spine in ax.spines.values():
+        spine.set_color('black')
+        spine.set_linewidth(1.5)
+
+    plt.ylim(ylims)
+    plt.tight_layout()
+    ax.legend(fontsize=10)
+    plt.show()
+
+
+def plot_multiple_inhibitor_simulations(
+    legend_labels,
+    time_arrays_min,
+    mean_intensities,
+    err_intensities,
+    figsize=(8, 5),
+    ylims=(0, 1.5),
+    inhibitor_frame=5
+):
+    """Overlay multiple inhibitor simulation results on a single plot.
+
+    Args:
+        legend_labels: Labels for each simulation trace (str or list of str).
+        time_arrays_min: Time arrays in minutes (array or list of arrays).
+        mean_intensities: Mean normalized intensities from each simulation.
+        err_intensities: Errors (SD or SEM) for each simulation.
+        figsize: Figure size.
+        ylims: Y-axis limits.
+        inhibitor_frame: Frame (minute) at which inhibitor treatment starts
+            (for time offset).
+    """
+    # --- normalize legend_labels to list ---
+    if not isinstance(legend_labels, (list, tuple)):
+        legend_labels = [legend_labels]
+    n = len(legend_labels)
+
+    # --- broadcast time_arrays_min if needed ---
+    if not isinstance(time_arrays_min, (list, tuple)):
+        time_arrays_min = [time_arrays_min] * n
+
+    # --- similarly ensure mean_intensities and err_intensities are lists ---
+    if not isinstance(mean_intensities, (list, tuple)):
+        mean_intensities = [mean_intensities] * n
+    if not isinstance(err_intensities, (list, tuple)):
+        err_intensities = [err_intensities] * n
+
+    # sanity check
+    assert len(time_arrays_min) == n == len(mean_intensities) == len(err_intensities), \
+        "All four inputs must be lists of the same length."
+
+    # 1) create figure
+    fig, ax = plt.subplots(figsize=figsize, facecolor='white')
+    ax.set_facecolor('white')
+
+    # 2) choose a colormap and generate n distinct colors
+    cmap = plt.get_cmap('tab10')
+    colors = cmap(np.linspace(0, 1, n))
+
+    # 3) plot each simulation with its assigned color
+    for idx, (label, t_min, mean_inh, err_inh) in enumerate(zip(
+        legend_labels, time_arrays_min, mean_intensities, err_intensities
+    )):
+        t_plot = np.array(t_min) - inhibitor_frame
+        color = colors[idx]
+        ax.plot(t_plot, mean_inh,
+                '-', color=color, linewidth=3, label=label)
+        ax.fill_between(
+            t_plot,
+            mean_inh - err_inh,
+            mean_inh + err_inh,
+            color=color,
+            alpha=0.05
+        )
+
+    # vertical line at t=0
+    ax.axvline(x=0, linestyle='--', color='k', linewidth=1)
+
+    # axes labels and formatting
+    ax.set_xlabel("Time (min)", size=16)
+    ax.set_ylabel("Norm. Intensity", size=16)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.5)
+    ax.set_ylim(ylims)
+
+    # legend and layout
+    ax.legend(fontsize=10, frameon=False)
+    plt.tight_layout()
+    plt.show()

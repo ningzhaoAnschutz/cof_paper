@@ -1,0 +1,84 @@
+# Backup folders from migration
+kk_*/
+
+# Generated files
+__pycache__/
+*.pyc
+.DS_Store
+.ipynb_checkpoints/
+
+# Data and results (too large for git)
+data/
+results/
+*.tif
+*.lif
+
+# Environment
+.gemini/
+.agent/
+temp_migration_plan/
+
+# Other
+.vscode
+temp/
+config.yml
+merged
+config
+**/[C]onfig*
+~$*
+Figure_Distributions_*
+out.txt
+output.txt
+analyses/
+analyses_*
+output__*
+slurm-*
+out-*
+masks_*
+mask_*
+tests/
+test*
+test*/
+*old*/
+*Old*/
+filtered_images_*/
+OneDrive*/
+*.jpg
+*.pdf
+spatio_temporal_models/
+gene_sequences/
+*.dna
+*particle*.png
+dev/
+human_genome/
+*.cds.all.fa
+kk_*
+*.pptx
+
+# ignore log files
+*.log
+# ignore txt files
+*.txt
+# ignore png files
+*.png   
+# ignore json files
+*.json
+# ignore svg files
+*.svg
+# ignore png files
+*.png   
+# ignore csv files
+*.csv
+*kk_old/
+*.npz
+*.docx
+modeling/
+diagrams_methods/
+plots_time_courses/
+quality_control/
+
+modeling/
+time_courses/
+acf/
+dev/
+writing/ 
