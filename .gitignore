@@ -23,7 +23,6 @@ temp_migration_plan/
 temp/
 config.yml
 merged
-#dataBases/
 config
 **/[C]onfig*
 ~$*
@@ -43,7 +42,6 @@ test*/
 *old*/
 *Old*/
 filtered_images_*/
-#database*
 OneDrive*/
 *.jpg
 *.pdf
