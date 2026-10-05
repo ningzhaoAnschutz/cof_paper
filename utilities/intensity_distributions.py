@@ -106,6 +106,7 @@ def load_condition_intensities(
     strict: bool = True,
     verbose: bool = False,
     coloc_filter: str = None,
+    frame_range: tuple = None,
 ) -> dict:
     """Load intensity data for a single experimental condition.
 
@@ -132,6 +133,12 @@ def load_condition_intensities(
             'not_colocalized' — include only non-colocalized trajectories.
             A trajectory is colocalized if any of its detections have
             is_colocalized == True.
+        frame_range: Optional (first_frame, last_frame) window, inclusive,
+            applied to the 'frame' column BEFORE per-particle averaging.
+            None (default) — use all frames (backward-compatible).
+            Example: (0, inhibitor_frame_index - 1) keeps only the
+            pre-treatment frames of an inhibitor run-off experiment, so
+            Mode 1 averages each particle over that window only.
 
     Returns:
         dict with keys per_cell, pooled_mean_per_particle,
@@ -147,6 +154,12 @@ def load_condition_intensities(
             f"coloc_filter must be None, 'colocalized', or "
             f"'not_colocalized', got '{coloc_filter}'"
         )
+    if frame_range is not None:
+        if len(frame_range) != 2 or frame_range[0] > frame_range[1]:
+            raise ValueError(
+                f"frame_range must be (first_frame, last_frame) with "
+                f"first_frame <= last_frame, got {frame_range}"
+            )
 
     dataframes_dir = Path(dataframes_dir)
     if not dataframes_dir.exists():
@@ -186,6 +199,25 @@ def load_condition_intensities(
                 raise ValueError(f"Missing particle IDs in '{particle_col}'")
 
             cell_name = folder_path.name.replace("results_", "")
+
+            # ── Apply frame window filter ──────────────────────
+            if frame_range is not None:
+                if "frame" not in df.columns:
+                    raise ValueError("frame_range requires a 'frame' column")
+                df = df[df["frame"].between(frame_range[0], frame_range[1])]
+                if df.empty:
+                    if verbose:
+                        print(
+                            f"  SKIP {cell_name}: no rows in "
+                            f"frame_range={frame_range}"
+                        )
+                    skipped_folders.append(
+                        {
+                            "folder": folder_path.name,
+                            "reason": f"no rows in frame_range={frame_range}",
+                        }
+                    )
+                    continue
 
             # ── Apply colocalization filter ────────────────────
             if coloc_filter is not None:
