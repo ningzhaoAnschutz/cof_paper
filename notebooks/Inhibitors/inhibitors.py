@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
 from pathlib import Path
+from html import escape
+import re
+import warnings
+
+import numpy as np
+import pandas as pd
+import tifffile
+from IPython import get_ipython
+from IPython.display import display
 current_dir = Path().resolve()
 from microlive.imports import *
 from microlive import microscopy as mi
@@ -23,6 +32,222 @@ plt.rcParams.update({
         'xtick.color': 'black',
         'ytick.color': 'black',
     })
+
+def _display_image_intensity_qc(qc_df, conditions):
+    """Show compact condition tables with highlighted review reasons."""
+    reasons = {'HIGH MEAN': 'Bright', 'LOW MEAN': 'Dim', 'JUMP': 'Jump',
+               'INFLUENTIAL': 'Mean influence', 'INVALID': 'Invalid signal',
+               'MISSING FRAMES': 'Missing frames', 'MASK NOT FOUND': 'Mask missing',
+               'AMBIGUOUS MASK': 'Ambiguous mask', 'INVALID MASK': 'Invalid mask'}
+    shell = get_ipython()
+    use_html = shell is not None and shell.__class__.__name__ != 'TerminalInteractiveShell'
+    for condition in conditions:
+        group_df = qc_df[qc_df.condition == condition]
+        if group_df.empty:
+            print(f'{condition}: no matching image series')
+            continue
+        files = list(group_df.lif_file.unique())
+        file_labels = {path: f'F{index + 1}' for index, path in enumerate(files)}
+        names = [row.scene_name if len(files) == 1 else f'{file_labels[row.lif_file]}: {row.scene_name}'
+                 for _, row in group_df.iterrows()]
+        jumps = [f'{row.jump_pct:.1f} @ {int(row.jump_frame)}' if pd.notna(row.jump_frame) else '—'
+                 for _, row in group_df.iterrows()]
+        reviews = ['⚠ ' + ' · '.join(reasons.get(flag, flag) for flag in flags.split('; ')) if flags else '—'
+                   for flags in group_df['flags']]
+        table_df = pd.DataFrame({'Index': group_df.image_index.to_numpy(), 'Image': names,
+                                 'Mean': group_df['mean'].to_numpy(), 'Pre mean': group_df.pre_mean.to_numpy(),
+                                 'Late Δ %': group_df.late_change_pct.to_numpy(), 'Jump % @ frame': jumps,
+                                 'Omit Δ %': group_df.omit_mean_change_pct.to_numpy(), 'Review': reviews})
+        region_names = {'entire_image': 'whole image', 'inside_cell': 'inside mask'}
+        regions = list(group_df.region.unique())
+        if len(regions) > 1:
+            table_df.insert(2, 'ROI', group_df.region.map(region_names).to_numpy())
+        roi_label = region_names[regions[0]] if len(regions) == 1 else 'mixed ROIs'
+        file_label = Path(files[0]).name if len(files) == 1 else '; '.join(f'{file_labels[path]}: {Path(path).name}' for path in files)
+        caption = f'{condition} — {len(group_df)} images · {roi_label} | {file_label}'
+        if use_html:
+            table = table_df.style.hide(axis='index').format(
+                {'Mean': '{:.1f}', 'Pre mean': '{:.1f}', 'Late Δ %': '{:+.1f}', 'Omit Δ %': '{:+.1f}'},
+                na_rep='—', escape='html').set_caption(escape(caption))
+            table = table.set_properties(**{'font-size': '12px', 'padding': '5px 8px', 'border-bottom': '1px solid #e5e7eb'})
+            table = table.set_properties(subset=['Image'], **{'text-align': 'left'})
+            table = table.set_table_styles([
+                {'selector': 'caption', 'props': [('text-align', 'left'), ('font-weight', 'bold'), ('padding', '8px 0')]},
+                {'selector': 'th', 'props': [('background-color', '#f3f4f6'), ('text-align', 'left'), ('padding', '6px 8px')]},
+            ])
+            table = table.apply(lambda column: ['background-color: #fff0d9; color: #8a3b00; font-weight: bold;' if value != '—'
+                                                else 'color: #9ca3af;' for value in column], subset=['Review'])
+            display(table)
+        else:
+            print('\n' + caption)
+            print(table_df.to_string(index=False, na_rep='—', float_format=lambda value: f'{value:.1f}'))
+
+def _image_intensity_qc_metrics(values, inhibitor_frame_index):
+    """Summarize a raw intensity trace without fitting or correcting decay."""
+    values = np.asarray(values, dtype=float)
+    values = np.where(np.isfinite(values) & (values != 0), values, np.nan)
+    finite = values[np.isfinite(values)]
+    pre = values[:inhibitor_frame_index]
+    pre = pre[np.isfinite(pre)]
+    late = values[-5:]
+    late = late[np.isfinite(late)]
+    pre_mean = pre.mean() if pre.size else np.nan
+    valid_steps = np.isfinite(values[:-1]) & np.isfinite(values[1:])
+    jump_frame, jump_pct = np.nan, np.nan
+    if valid_steps.any() and np.isfinite(pre_mean) and pre_mean > 0:
+        steps = np.where(valid_steps, np.abs(np.diff(values)), -np.inf)
+        jump_frame = int(np.argmax(steps)) + 1
+        jump_pct = 100 * steps[int(jump_frame) - 1] / pre_mean
+    return dict(mean=finite.mean() if finite.size else np.nan, pre_mean=pre_mean,
+                late_change_pct=100 * (late.mean() / pre_mean - 1) if late.size and pre_mean > 0 else np.nan,
+                jump_pct=jump_pct, jump_frame=jump_frame,
+                missing_frames=int(np.isnan(values).sum()))
+
+def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
+                       inhibitor_frame_index=4, frame_interval_sec=60,
+                       iqr_multiplier=1.5, jump_threshold_pct=20,
+                       influence_threshold_pct=10, show_images=False):
+    """Show each LIF image's compact raw-intensity QC and return every diagnostic row.
+
+    Args:
+        lif_dirs: One LIF directory or a list of directories; files are sorted.
+        conditions: Condition names matching LIF filename suffixes.
+        mask_dir: Optional directory of mask TIFFs; None measures the whole image.
+        channel_index: Zero-based channel; unavailable channels warn and raise.
+        inhibitor_frame_index: Number of pre-treatment frames for reference means.
+        frame_interval_sec: Frame spacing used to report the largest jump's time.
+        iqr_multiplier: Within-condition/region multiplier for high/low mean flags.
+        jump_threshold_pct: Minimum adjacent-frame step relative to pre mean.
+        influence_threshold_pct: Minimum leave-one-out mean change to flag.
+        show_images: Display all initial images on shared contrast; default False.
+
+    Returns:
+        DataFrame with every image, its stable zero-based condition-list index,
+        LIF/series name, region, intensity metrics, and flags. No exclusions occur.
+        Gradual changes are descriptive; no photobleaching fit or correction is used.
+    """
+    if isinstance(lif_dirs, (str, Path)):
+        lif_dirs = [lif_dirs]
+    lif_dirs = [Path(directory) for directory in lif_dirs]
+    if not lif_dirs or any(not directory.is_dir() for directory in lif_dirs):
+        raise FileNotFoundError('Pass existing directories containing LIF files')
+    if not conditions or len(set(conditions)) != len(conditions):
+        raise ValueError('Pass a nonempty list of distinct condition names')
+    if not isinstance(channel_index, (int, np.integer)) or channel_index < 0:
+        raise ValueError('channel_index must be a nonnegative integer')
+    if inhibitor_frame_index < 1 or frame_interval_sec <= 0:
+        raise ValueError('Use a positive pre-treatment frame count and frame interval')
+    if iqr_multiplier < 0 or jump_threshold_pct <= 0 or influence_threshold_pct <= 0:
+        raise ValueError('QC thresholds must be positive; iqr_multiplier may be zero')
+    lif_paths = sorted({path.resolve() for directory in lif_dirs for path in directory.iterdir()
+                        if path.is_file() and path.suffix.lower() == '.lif'})
+    mask_index = {}
+    if mask_dir is not None:
+        mask_dir = Path(mask_dir)
+        if not mask_dir.is_dir():
+            raise FileNotFoundError(f'Mask directory does not exist: {mask_dir}')
+        for mask_path in sorted(mask_dir.rglob('mask_*')):
+            if mask_path.is_file() and mask_path.suffix.lower() in {'.tif', '.tiff'}:
+                mask_index.setdefault(mask_path.stem, []).append(mask_path)
+    rows, previews = [], {}
+    for condition in conditions:
+        image_index = 0
+        for lif_path in [path for path in lif_paths if path.stem.endswith('_' + condition)]:
+            reader = mi.ReadLif(lif_path, show_metadata=False, format='TZYXC', lazy=True)
+            for scene_index, scene_name in enumerate(reader._aics.scenes):
+                reader._aics.set_scene(scene_index)
+                if channel_index >= reader._aics.dims.C:
+                    message = f'Channel {channel_index} is unavailable in {lif_path.name}: {scene_name}'
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('always', UserWarning)
+                        warnings.warn(message, UserWarning, stacklevel=2)
+                    raise ValueError(message)
+                image = reader.read_scene(scene_index)
+                projection = image[..., channel_index].max(axis=1)
+                mask = np.ones(projection.shape[1:], dtype=bool)
+                region, mask_note = 'entire_image', ''
+                if mask_dir is not None:
+                    name = lif_path.stem + '_' + scene_name.replace('/', '_')
+                    candidates = mask_index.get('mask_' + name, [])
+                    if len(candidates) != 1:
+                        mask_note = 'MASK NOT FOUND' if not candidates else 'AMBIGUOUS MASK'
+                    else:
+                        try:
+                            candidate = np.squeeze(tifffile.imread(candidates[0]))
+                            if candidate.shape != mask.shape or not np.isfinite(candidate).all() or not (candidate > 0).any():
+                                raise ValueError('Mask must be finite, nonempty, and match YX')
+                            mask, region = candidate > 0, 'inside_cell'
+                        except (OSError, ValueError, tifffile.TiffFileError):
+                            mask_note = 'INVALID MASK'
+                pixels = projection[:, mask]
+                valid = np.isfinite(pixels) & (pixels != 0)
+                values = np.divide(np.where(valid, pixels, 0).sum(axis=1, dtype=float),
+                                   valid.sum(axis=1), out=np.full(len(projection), np.nan),
+                                   where=valid.sum(axis=1) > 0)
+                match = re.search(r'Position\s+(\d+)$', scene_name)
+                row = dict(condition=condition, image_index=image_index,
+                           image_name=f'{lif_path.name} :: {scene_name}',
+                           lif_file=str(lif_path), scene_index=scene_index, scene_name=scene_name,
+                           position=int(match.group(1)) if match else None,
+                           region=region, n_frames=len(values),
+                           **_image_intensity_qc_metrics(values, inhibitor_frame_index),
+                           omit_mean_change_pct=np.nan, flags=mask_note)
+                row['jump_time_min'] = (row['jump_frame'] - inhibitor_frame_index) * frame_interval_sec / 60
+                if show_images:
+                    previews[len(rows)] = (projection[0, ::2, ::2].copy(), mask[::2, ::2].copy())
+                rows.append(row)
+                image_index += 1
+                del image, projection, pixels, valid
+    if not rows:
+        raise FileNotFoundError('No LIF image series match the configured conditions')
+    qc_df = pd.DataFrame(rows)
+    for _, group_df in qc_df.groupby(['condition', 'region'], sort=False):
+        means = group_df['mean'].dropna().to_numpy()
+        q1, q3 = np.percentile(means, [25, 75]) if len(means) >= 4 else (np.nan, np.nan)
+        low, high = q1 - iqr_multiplier * (q3 - q1), q3 + iqr_multiplier * (q3 - q1)
+        for index in group_df.index:
+            row = qc_df.loc[index]
+            others = group_df.loc[group_df.index != index, 'mean'].dropna()
+            change = 100 * (others.mean() / means.mean() - 1) if len(others) and len(means) and means.mean() > 0 else np.nan
+            qc_df.at[index, 'omit_mean_change_pct'] = change
+            flags = [row['flags']] if row['flags'] else []
+            if not np.isfinite(row['mean']) or not np.isfinite(row.pre_mean) or row.pre_mean <= 0:
+                flags.append('INVALID')
+            if row['mean'] < low:
+                flags.append('LOW MEAN')
+            if row['mean'] > high:
+                flags.append('HIGH MEAN')
+            if row.jump_pct >= jump_threshold_pct:
+                flags.append('JUMP')
+            if abs(change) >= influence_threshold_pct:
+                flags.append('INFLUENTIAL')
+            if row.missing_frames:
+                flags.append('MISSING FRAMES')
+            qc_df.at[index, 'flags'] = '; '.join(flags)
+    _display_image_intensity_qc(qc_df, conditions)
+    if show_images:
+        active_conditions = [condition for condition in conditions if (qc_df.condition == condition).any()]
+        columns = int(qc_df.groupby('condition').size().max())
+        pixels = np.concatenate([preview[0].ravel() for preview in previews.values()])
+        pixels = pixels[np.isfinite(pixels)]
+        vmax = max(1.0, float(np.percentile(pixels, 99.5))) if pixels.size else 1.0
+        fig, axes = plt.subplots(len(active_conditions), columns, figsize=(1.7 * columns, 1.85 * len(active_conditions)), squeeze=False)
+        for ax in axes.flat:
+            ax.axis('off')
+        for row_index, condition in enumerate(active_conditions):
+            for column, index in enumerate(qc_df.index[qc_df.condition == condition]):
+                row = qc_df.loc[index]
+                image, mask = previews[index]
+                ax = axes[row_index, column]
+                ax.imshow(image, cmap='gray', vmin=0, vmax=vmax)
+                if row.region == 'inside_cell' and not mask.all():
+                    ax.contour(mask, levels=[0.5], colors=['cyan'], linewidths=0.4)
+                ax.set_title(f'{condition} [{int(row.image_index)}]\n{row.scene_name}' + (' • FLAG' if row['flags'] else ''),
+                             fontsize=8, color='red' if row['flags'] else 'black')
+        fig.suptitle(f'All image series, frame 0 — shared display contrast 0–{vmax:.0f}', fontsize=11)
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        plt.show()
+    return qc_df
 
 def calculate_number_of_particles_per_frame(particle_counts_per_frame, inhibitor_frame_index):
     """Normalize the number of particles per frame to the average before treatment.
@@ -433,7 +658,9 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
                    show_zero_y_axis=False,
                    fit_end_range=None, r2_threshold=0.95,
                    gene_length_effective=None, drug_diffusion_time_min=1.0,
-                   frame_interval_sec=60):
+                   frame_interval_sec=60,
+                   show_error=True,
+                   **kwargs):
     """Plot inhibitor run-off data with optional model fit.
 
     Args:
@@ -478,6 +705,8 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
         colors = ['blue']
     if not isinstance(colors, list):
         colors = [colors]
+
+    show_error = kwargs.get('show_errors', kwargs.get('show_error_band', show_error))
 
     if results_folder is None:
         results_folder = Path(current_dir).joinpath('results_HT')
@@ -578,10 +807,11 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
             ax2.set_facecolor('white')
             ax2.plot(full_frames, mean_trajectory, 'o-',
                      color=colors[0], linewidth=1, label='Experimental (mean)', markersize=6)
-            ax2.fill_between(full_frames,
-                             mean_trajectory - err_trajectory,
-                             mean_trajectory + err_trajectory,
-                             color=colors[0], alpha=0.2)
+            if show_error:
+                ax2.fill_between(full_frames,
+                                 mean_trajectory - err_trajectory,
+                                 mean_trajectory + err_trajectory,
+                                 color=colors[0], alpha=0.2)
             if show_treatment_line:
                 ax2.axvline(x=0, color='black', linestyle='--', linewidth=1,
                             label=f'{treatment_label} Treatment')
@@ -666,10 +896,11 @@ def plot_inhibitor(full_frames, intensities_normalized, inhibitor_frame_index,
 
     ax.plot(full_frames, mean_trajectory, 'o-',
             color=colors[0], linewidth=1, label='Experimental (mean)', markersize=6)
-    ax.fill_between(full_frames,
-                    mean_trajectory - err_trajectory,
-                    mean_trajectory + err_trajectory,
-                    color=colors[0], alpha=0.2)
+    if show_error:
+        ax.fill_between(full_frames,
+                        mean_trajectory - err_trajectory,
+                        mean_trajectory + err_trajectory,
+                        color=colors[0], alpha=0.2)
 
     # TASEP simulation overlay (if provided)
     if mean_intensity_ssa_inh is not None and err_intensity_ssa_inh is not None:
@@ -839,7 +1070,10 @@ def plot_multiple_inhibitors(full_frames_list,
                                 show_background_line=False,
                                 show_zero_y_axis=False,
                                 fit_end_range=None, r2_threshold=0.95,
-                                gene_length_effective=None, drug_diffusion_time_min=1.0):
+                                gene_length_effective=None, drug_diffusion_time_min=1.0,
+                                show_error=True,
+                                filename_prefix='HT_',
+                                **kwargs):
     """Plot multiple inhibitor datasets on the same axes with optional model fits.
 
     Args:
@@ -850,6 +1084,7 @@ def plot_multiple_inhibitors(full_frames_list,
         inhibitor_frame_index: Frame index at which inhibitor treatment starts.
         results_folder: Where to save the figure (will be created if needed).
         plot_name: Filename suffix for the saved figure.
+        filename_prefix: Prefix for saved filenames; use '' to omit it.
         responding_indices_list: Per-dataset lists of cell indices to include.
             Defaults to all.
         figsize: Figure size tuple.
@@ -898,6 +1133,8 @@ def plot_multiple_inhibitors(full_frames_list,
     # Default color cycle
     if colors is None:
         colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+    show_error = kwargs.get('show_errors', kwargs.get('show_error_band', show_error))
 
     fit_results = []
 
@@ -976,10 +1213,11 @@ def plot_multiple_inhibitors(full_frames_list,
         ax.plot(frames, mean_traj, 'o-', color=color,
                 linewidth=1, markersize=6,
                 label=label_text)
-        ax.fill_between(frames,
-                        mean_traj - err_traj,
-                        mean_traj + err_traj,
-                        color=color, alpha=0.2)
+        if show_error:
+            ax.fill_between(frames,
+                            mean_traj - err_traj,
+                            mean_traj + err_traj,
+                            color=color, alpha=0.2)
 
         # ── Compute basal value for linear_extrapolated ────────────
         _ds_basal_value = None
@@ -1088,7 +1326,8 @@ def plot_multiple_inhibitors(full_frames_list,
     for spine in ax.spines.values():
         spine.set_color('black')
         spine.set_linewidth(1.5)
-    ax.set_ylim(*ylims)
+    if ylims is not None:
+        ax.set_ylim(*ylims)
     if xlims is not None:
         ax.set_xlim(*xlims)
 
@@ -1097,9 +1336,9 @@ def plot_multiple_inhibitors(full_frames_list,
     plt.tight_layout()
 
     # Save & show
-    plt.savefig(results_folder.joinpath(f'HT_{plot_name}.png'), dpi=600,
+    plt.savefig(results_folder.joinpath(f'{filename_prefix}{plot_name}.png'), dpi=600,
                 bbox_extra_artists=(legend,), bbox_inches='tight')
-    plt.savefig(results_folder.joinpath(f'HT_{plot_name}.svg'), dpi=600,
+    plt.savefig(results_folder.joinpath(f'{filename_prefix}{plot_name}.svg'), dpi=600,
                 bbox_extra_artists=(legend,), bbox_inches='tight')
     plt.show()
 
@@ -1195,10 +1434,11 @@ def plot_multiple_inhibitors(full_frames_list,
                 ax2.set_facecolor('white')
                 ax2.plot(frames, _mean_traj, 'o-', color=color,
                          linewidth=1, label=ds_label, markersize=6)
-                ax2.fill_between(frames,
-                                 _mean_traj - _err_traj,
-                                 _mean_traj + _err_traj,
-                                 color=color, alpha=0.2)
+                if show_error:
+                    ax2.fill_between(frames,
+                                     _mean_traj - _err_traj,
+                                     _mean_traj + _err_traj,
+                                     color=color, alpha=0.2)
                 if show_treatment_line:
                     ax2.axvline(x=0, color='black', linestyle='--', linewidth=1,
                                 label=f'{treatment_label} Treatment')
@@ -1255,7 +1495,7 @@ def plot_multiple_inhibitors(full_frames_list,
                 leg2 = ax2.legend(fontsize=10, loc='center left',
                                   bbox_to_anchor=(1.02, 0.5),
                                   framealpha=0.9, edgecolor='black')
-                fname = f'HT_{plot_name}_ds{ds_idx}_end_{end_idx}'
+                fname = f'{filename_prefix}{plot_name}_ds{ds_idx}_end_{end_idx}'
                 plt.savefig(results_folder.joinpath(fname + '.png'), dpi=600,
                             bbox_extra_artists=(leg2,), bbox_inches='tight')
                 plt.savefig(results_folder.joinpath(fname + '.svg'), dpi=600,
