@@ -513,6 +513,7 @@ def plot_pooled_distributions(
     kde_bw_method="scott",
     kde_alpha: float = 0.25,
     drop_nonpositive: bool = False,
+    legend_labels: list = None,
 ):
     """Overlay KDE / histogram for all conditions on a single panel.
 
@@ -531,10 +532,14 @@ def plot_pooled_distributions(
         kde_alpha: Fill alpha for overlapping distributions.
         drop_nonpositive: If True, exclude intensity <= 0 from plots.
         bins: Number of histogram bins, or explicit shared bin edges.
+        legend_labels: Optional display labels, one per condition. Overrides
+            the default cell/particle counts (e.g. for unlinked GUI detections).
     """
     sns.set_style("ticks")
     if len(all_results) != len(list_colors):
         raise ValueError("all_results and list_colors must have the same length")
+    if legend_labels is not None and len(legend_labels) != len(all_results):
+        raise ValueError("legend_labels and all_results must have the same length")
     if not all_results:
         raise ValueError("all_results must contain at least one condition")
     combined = np.concatenate([_get_data_for_mode(r, mode) for r in all_results])
@@ -546,14 +551,15 @@ def plot_pooled_distributions(
     ax.set_facecolor("white")
     has_plotted_data = False
 
-    for r, color in zip(all_results, list_colors):
+    for condition_index, (r, color) in enumerate(zip(all_results, list_colors)):
         vals = _finite_values(_get_data_for_mode(r, mode), drop_nonpositive)
         if vals.size == 0:
             continue
         has_plotted_data = True
 
         name = r.get("name", "?")
-        label = f"{name}  ({r['n_cells']} cells, {r['n_particles_total']} particles)"
+        label = (legend_labels[condition_index] if legend_labels is not None
+                 else f"{name}  ({r['n_cells']} cells, {r['n_particles_total']} particles)")
 
         # Optional histogram behind the KDE
         if show_hist:

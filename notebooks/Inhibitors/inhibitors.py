@@ -249,6 +249,175 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
         plt.show()
     return qc_df
 
+
+def load_pre_treatment_intensities(gui_files, inhibitor_frame_index,
+                                  condition_labels=None, channel_index=0,
+                                  min_snr=None, drop_nonpositive=False,
+                                  strict=False, verbose=True):
+    """Load raw spot intensities before treatment for the included GUI images.
+
+    Args:
+        gui_files: Mapping from condition to (CSV path, acquired frame count)
+            pairs, as built by inhibitors_final.ipynb after manual exclusions.
+            CSVs must be in the usual results_*/tracking_*.csv layout.
+        inhibitor_frame_index: First treatment frame (excluded from the data).
+        condition_labels: Optional mapping from condition to display label.
+        channel_index: Channel used for spot_int_ch_ intensity measurements.
+        min_snr: Optional minimum SNR; None keeps all finite measurements.
+        drop_nonpositive: If True, remove zero and negative intensities.
+        strict: If True, raise on missing or malformed data instead of skipping.
+        verbose: Print included image and observation counts and any skips.
+
+    Returns:
+        List of results compatible with plot_pooled_distributions. Only the
+        explicitly included images contribute to the pooled arrays. The frame
+        window is applied before particle averages by the existing loader.
+        For GUI detections, use all_timepoints (mode 2); particle identifiers
+        do not necessarily represent linked trajectories.
+    """
+    # Legacy notebooks import inhibitors before adding the repository root
+    # to sys.path; load the shared utilities only when this helper is called.
+    from utilities.intensity_distributions import load_condition_intensities
+
+    if (isinstance(inhibitor_frame_index, (bool, np.bool_))
+            or not isinstance(inhibitor_frame_index, (int, np.integer))
+            or inhibitor_frame_index < 1):
+        raise ValueError('inhibitor_frame_index must be a positive integer')
+    frame_range = (0, inhibitor_frame_index - 1)
+    results = []
+    for condition, files in gui_files.items():
+        files_by_root = {}
+        for csv_path, _ in files:
+            csv_path = Path(csv_path).resolve()
+            cells = files_by_root.setdefault(csv_path.parent.parent, {})
+            cells[csv_path.parent.name.replace('results_', '')] = csv_path
+        per_cell, skipped_folders = [], []
+        for root, included in files_by_root.items():
+            # Reuse frame filtering and particle aggregation; then restrict
+            # to the exact image folders selected by the notebook.
+            try:
+                loaded = load_condition_intensities(
+                    dataframes_dir=root, folder_substring=condition,
+                    channel_index=channel_index, min_snr=min_snr,
+                    drop_nonpositive=drop_nonpositive, strict=False,
+                    verbose=False, frame_range=frame_range,
+                )
+            except (ValueError, FileNotFoundError) as error:
+                if strict:
+                    raise
+                skipped_folders.extend(
+                    {'folder': path.parent.name, 'reason': str(error)}
+                    for path in included.values()
+                )
+                continue
+            selected = [cell for cell in loaded['per_cell']
+                        if cell['cell_name'] in included]
+            loaded_names = set()
+            for cell in selected:
+                # Remove nonfinite measurements without dropping finite
+                # zero/negative background-subtracted intensities by default.
+                for key in ('all_timepoints', 'mean_per_particle'):
+                    values = np.asarray(cell[key], dtype=float)
+                    cell[key] = values[np.isfinite(values)]
+                if cell['all_timepoints'].size:
+                    cell['csv_path'] = included[cell['cell_name']]
+                    cell['n_observations'] = len(cell['all_timepoints'])
+                    cell['n_particles'] = len(cell['mean_per_particle'])
+                    per_cell.append(cell)
+                    loaded_names.add(cell['cell_name'])
+            reasons = {item['folder'].replace('results_', ''): item['reason']
+                       for item in loaded['skipped_folders']}
+            for name, path in included.items():
+                if name not in loaded_names:
+                    reason = reasons.get(name, 'No finite pre-treatment intensities')
+                    if strict:
+                        raise ValueError(f'{path}: {reason}')
+                    skipped_folders.append({'folder': path.parent.name, 'reason': reason})
+        if verbose:
+            for item in skipped_folders:
+                print(f"  SKIP {item['folder']}: {item['reason']}")
+        if not per_cell:
+            if strict:
+                raise ValueError(f'No pre-treatment data for {condition}')
+            if verbose:
+                print(f'  SKIP {condition}: no included images with pre-treatment data')
+            continue
+        result = dict(
+            condition=condition, name=(condition_labels or {}).get(condition, condition),
+            frame_range=frame_range, channel_index=channel_index,
+            per_cell=per_cell, n_cells=len(per_cell),
+            pooled_mean_per_particle=np.concatenate([cell['mean_per_particle'] for cell in per_cell]),
+            pooled_all_timepoints=np.concatenate([cell['all_timepoints'] for cell in per_cell]),
+            n_particles_total=sum(cell['n_particles'] for cell in per_cell),
+            n_observations_total=sum(cell['n_observations'] for cell in per_cell),
+            skipped_folders=skipped_folders,
+        )
+        results.append(result)
+        if verbose:
+            print(f"  {result['name']}: {result['n_cells']} images, "
+                  f"{result['n_observations_total']} observations, frames {frame_range}")
+    if not results:
+        raise ValueError('No included images contain finite pre-treatment intensities')
+    return results
+
+
+def plot_pre_treatment_distributions(pre_results, colors, channel_index, save_dir,
+                                     **plot_options):
+    """Overlay all conditions in one KDE panel using the existing plotter.
+
+    Each finite spot measurement in frames before treatment contributes one
+    value (mode 2). Colors correspond to pre_results in order. Additional
+    options such as xlim, kde_alpha, and figsize go to the shared plotter.
+    """
+    from utilities.intensity_distributions import plot_pooled_distributions
+
+    options = dict(x_label='Pre-treatment spot intensity (a.u.)', mode=2,
+                   kde=True, show_hist=False, kde_alpha=0.35,
+                   kde_bw_method='scott', xlim_percentiles=(1, 99),
+                   figsize=(5, 4), print_stats=True,
+                   legend_labels=[f"{result['name']}  ({result['n_cells']} images, "
+                                  f"{result['n_observations_total']} detections)"
+                                  for result in pre_results])
+    options.update(plot_options)
+    return plot_pooled_distributions(
+        pre_results, colors, channel_index=channel_index,
+        save_dir=save_dir, **options,
+    )
+
+
+def plot_pre_treatment_whisker(pre_results, save_dir=None,
+                               plot_name='pre_treatment_intensity_whisker',
+                               **plot_options):
+    """Plot one pre-treatment median per image in the Fig 1K reference style.
+
+    Reuses plot_swarm_plot for white boxes, red median lines, black dots and
+    5th/95th-percentile whiskers, Arial fonts, and matching line widths. Stats
+    compare image summaries, and GUI measurements are not labeled as linked
+    trajectories. Set cell_summary='mean' to summarize images by their mean.
+
+    Returns:
+        Matplotlib Axes, as returned by the shared reference plotter.
+    """
+    from utilities.plotting import plot_swarm_plot
+
+    if not pre_results:
+        raise ValueError('pre_results must contain at least one condition')
+    if save_dir is not None:
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+    options = dict(figsize=(4.25, 4), tick_size=12, swarm_color='black',
+                   show_stats=True, only_significant=True,
+                   max_percentile_significance=99.5, cell_summary='median',
+                   show_n_trajectories=False)
+    options.update(plot_options)
+    options.setdefault('y_label', f"Pre-treatment {options['cell_summary']} intensity (a.u.)")
+    return plot_swarm_plot(
+        [[cell['all_timepoints'] for cell in result['per_cell']] for result in pre_results],
+        [result['name'] for result in pre_results],
+        save_dir=save_dir, plot_name=plot_name, **options,
+    )
+
+
 def calculate_number_of_particles_per_frame(particle_counts_per_frame, inhibitor_frame_index):
     """Normalize the number of particles per frame to the average before treatment.
 
