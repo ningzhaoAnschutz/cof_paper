@@ -259,7 +259,19 @@ def extract_data_from_folders(
     list_max_frame, list_channel_counts = [], []
 
     for folder in condition_folders:
-        csv_files = [f for f in folder.iterdir() if f.suffix == ".csv"]
+        # Skip hidden files and macOS AppleDouble sidecars ("._*"), which are
+        # invisible on macOS but appear as real (binary) files on Windows.
+        # Sort so file selection is deterministic across operating systems.
+        csv_files = sorted(
+            (
+                f
+                for f in folder.iterdir()
+                if f.is_file()
+                and f.suffix.lower() == ".csv"
+                and not f.name.startswith(".")
+            ),
+            key=lambda f: f.name,
+        )
         tracking_files = [f for f in csv_files if "tracking_" in f.stem]
         if not tracking_files:
             raise FileNotFoundError(

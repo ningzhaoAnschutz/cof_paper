@@ -49,10 +49,12 @@ def extract_laser_intensities(folder_with_lif_files, verbose=False):
 
     folder_with_lif_files = Path(folder_with_lif_files)
 
-    # Find all LIF files
-    files = [
-        f for f in folder_with_lif_files.iterdir() if f.is_file() and f.suffix == ".lif"
-    ]
+    # Find all LIF files (skip hidden / macOS "._*" sidecar files)
+    files = sorted(
+        f
+        for f in folder_with_lif_files.iterdir()
+        if f.is_file() and f.suffix.lower() == ".lif" and not f.name.startswith(".")
+    )
     print(f"Found {len(files)} LIF files in {folder_with_lif_files.name}")
 
     # Collect all data
