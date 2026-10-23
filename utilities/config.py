@@ -39,6 +39,14 @@ REPORTER_PLASMID_NAME_MAPPING = {
     # piggybac-Tet-on-anti-HAfb-Halo-IRES-LaG16-tdStayGold
     "pNZ414" : "4GFPuv(trunc)-2mCh",
     "pNZ415" : "4sfGFP(trunc)-2mCh",
+    # new Tristan constructs
+    #"pNZ415" : "4sfGFP(trunc)-2mCh",
+    "pTB004" : "CFTR_T4",
+    "pTB005" : "CFTR_T8",
+    "pTB015" : "CFTR_D12",
+    "pTB016" : "CFTR_T2a",
+    "pTB017" : "CFTR_T27",
+    "pTB018" : "CFTR_G3a",
 
 }
 
@@ -66,4 +74,12 @@ PLASMID_SHORT_NAME_MAPPING = {
     "pNZ381": "0sf",  # 0 sfGFP copies (mCh-only control)
     "pNZ414" : "4uv-trc",
     "pNZ415" : "4sf-trc",
+    # new Tristan constructs
+    "pTB004" : "T4",
+    "pTB005" : "T8",
+    "pTB015" : "D12",
+    "pTB016" : "T2a",
+    "pTB017" : "T27",
+    "pTB018" : "G3a",
+
 }
