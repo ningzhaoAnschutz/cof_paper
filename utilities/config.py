@@ -40,7 +40,6 @@ REPORTER_PLASMID_NAME_MAPPING = {
     "pNZ414" : "4GFPuv(trunc)-2mCh",
     "pNZ415" : "4sfGFP(trunc)-2mCh",
     # new Tristan constructs
-    #"pNZ415" : "4sfGFP(trunc)-2mCh",
     "pTB004" : "CFTR_T4",
     "pTB005" : "CFTR_T8",
     "pTB015" : "CFTR_D12",

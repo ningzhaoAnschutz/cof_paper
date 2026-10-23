@@ -35,6 +35,11 @@ plt.rcParams.update({
 
 def _display_image_intensity_qc(qc_df, conditions):
     """Show compact condition tables with highlighted review reasons."""
+    coverage = qc_df.groupby('condition', sort=False).agg(
+        lif_files=('lif_file', 'nunique'), image_series=('image_index', 'size'),
+        flagged_images=('flags', lambda flags: flags.ne('').sum())).reindex(conditions, fill_value=0)
+    print('\nQC coverage across all matching LIF files:')
+    print(coverage.to_string())
     reasons = {'HIGH MEAN': 'Bright', 'LOW MEAN': 'Dim', 'JUMP': 'Jump',
                'INFLUENTIAL': 'Mean influence', 'INVALID': 'Invalid signal',
                'MISSING FRAMES': 'Missing frames', 'MASK NOT FOUND': 'Mask missing',
@@ -54,14 +59,15 @@ def _display_image_intensity_qc(qc_df, conditions):
                  for _, row in group_df.iterrows()]
         reviews = ['⚠ ' + ' · '.join(reasons.get(flag, flag) for flag in flags.split('; ')) if flags else '—'
                    for flags in group_df['flags']]
-        table_df = pd.DataFrame({'Index': group_df.image_index.to_numpy(), 'Image': names,
+        positions = [str(int(value)) if pd.notna(value) else '—' for value in group_df.position]
+        table_df = pd.DataFrame({'Index': group_df.image_index.to_numpy(), 'Position': positions, 'Image': names,
                                  'Mean': group_df['mean'].to_numpy(), 'Pre mean': group_df.pre_mean.to_numpy(),
                                  'Late Δ %': group_df.late_change_pct.to_numpy(), 'Jump % @ frame': jumps,
                                  'Omit Δ %': group_df.omit_mean_change_pct.to_numpy(), 'Review': reviews})
         region_names = {'entire_image': 'whole image', 'inside_cell': 'inside mask'}
         regions = list(group_df.region.unique())
         if len(regions) > 1:
-            table_df.insert(2, 'ROI', group_df.region.map(region_names).to_numpy())
+            table_df.insert(3, 'ROI', group_df.region.map(region_names).to_numpy())
         roi_label = region_names[regions[0]] if len(regions) == 1 else 'mixed ROIs'
         file_label = Path(files[0]).name if len(files) == 1 else '; '.join(f'{file_labels[path]}: {Path(path).name}' for path in files)
         caption = f'{condition} — {len(group_df)} images · {roi_label} | {file_label}'
@@ -103,6 +109,26 @@ def _image_intensity_qc_metrics(values, inhibitor_frame_index):
                 jump_pct=jump_pct, jump_frame=jump_frame,
                 missing_frames=int(np.isnan(values).sum()))
 
+
+def lif_matches_condition(lif_path, condition):
+    """Return True if a LIF filename belongs to a condition.
+
+    The filename stem must end with ``_<condition>`` optionally followed by a
+    numeric replicate suffix, so ``..._R2_CHX.lif`` and ``..._CHX_1.lif`` both
+    match ``'CHX'``, while ``..._SVC_CTRL.lif`` does not match ``'SVC'``.
+    """
+    return re.search(rf'_{re.escape(condition)}(?:_\d+)?$', Path(lif_path).stem) is not None
+
+
+def find_condition_lifs(lif_dirs, condition):
+    """Return sorted LIF paths in one or more directories matching a condition."""
+    if isinstance(lif_dirs, (str, Path)):
+        lif_dirs = [lif_dirs]
+    return sorted({path.resolve() for directory in lif_dirs for path in Path(directory).iterdir()
+                   if path.is_file() and path.suffix.lower() == '.lif'
+                   and lif_matches_condition(path, condition)})
+
+
 def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
                        inhibitor_frame_index=4, frame_interval_sec=60,
                        iqr_multiplier=1.5, jump_threshold_pct=20,
@@ -110,7 +136,8 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
     """Show each LIF image's compact raw-intensity QC and return every diagnostic row.
 
     Args:
-        lif_dirs: One LIF directory or a list of directories; files are sorted.
+        lif_dirs: One LIF directory or a list of directories; all matching files
+            are read in sorted order, including every replicate.
         conditions: Condition names matching LIF filename suffixes.
         mask_dir: Optional directory of mask TIFFs; None measures the whole image.
         channel_index: Zero-based channel; unavailable channels warn and raise.
@@ -123,8 +150,18 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
 
     Returns:
         DataFrame with every image, its stable zero-based condition-list index,
-        LIF/series name, region, intensity metrics, and flags. No exclusions occur.
+        LIF path/stem, series name/index, Position number, region, intensity
+        metrics, and flags. No exclusions occur.
         Gradual changes are descriptive; no photobleaching fit or correction is used.
+
+    Prints:
+        Per-condition file/image/flag counts and a copyable excluded_positions
+        dictionary with flagged Position numbers
+        for every condition, including empty lists. These are suggestions for
+        manual review, not automatic exclusions. Flagged images without a
+        Position number are omitted from the dictionary with a warning.
+        Position numbers repeated across LIF files apply to all matching images
+        in that condition; lif_file and scene_index identify individual images.
     """
     if isinstance(lif_dirs, (str, Path)):
         lif_dirs = [lif_dirs]
@@ -152,7 +189,7 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
     rows, previews = [], {}
     for condition in conditions:
         image_index = 0
-        for lif_path in [path for path in lif_paths if path.stem.endswith('_' + condition)]:
+        for lif_path in [path for path in lif_paths if lif_matches_condition(path, condition)]:
             reader = mi.ReadLif(lif_path, show_metadata=False, format='TZYXC', lazy=True)
             for scene_index, scene_name in enumerate(reader._aics.scenes):
                 reader._aics.set_scene(scene_index)
@@ -187,7 +224,8 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
                 match = re.search(r'Position\s+(\d+)$', scene_name)
                 row = dict(condition=condition, image_index=image_index,
                            image_name=f'{lif_path.name} :: {scene_name}',
-                           lif_file=str(lif_path), scene_index=scene_index, scene_name=scene_name,
+                           lif_file=str(lif_path), lif_stem=lif_path.stem,
+                           scene_index=scene_index, scene_name=scene_name,
                            position=int(match.group(1)) if match else None,
                            region=region, n_frames=len(values),
                            **_image_intensity_qc_metrics(values, inhibitor_frame_index),
@@ -235,6 +273,8 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
         for ax in axes.flat:
             ax.axis('off')
         for row_index, condition in enumerate(active_conditions):
+            files = list(qc_df.loc[qc_df.condition == condition, 'lif_file'].unique())
+            file_labels = {path: f'F{index + 1}' for index, path in enumerate(files)}
             for column, index in enumerate(qc_df.index[qc_df.condition == condition]):
                 row = qc_df.loc[index]
                 image, mask = previews[index]
@@ -242,25 +282,50 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
                 ax.imshow(image, cmap='gray', vmin=0, vmax=vmax)
                 if row.region == 'inside_cell' and not mask.all():
                     ax.contour(mask, levels=[0.5], colors=['cyan'], linewidths=0.4)
-                ax.set_title(f'{condition} [{int(row.image_index)}]\n{row.scene_name}' + (' • FLAG' if row['flags'] else ''),
+                scene_label = row.scene_name if len(files) == 1 else f'{file_labels[row.lif_file]}: {row.scene_name}'
+                ax.set_title(f'{condition} [{int(row.image_index)}]\n{scene_label}' + (' • FLAG' if row['flags'] else ''),
                              fontsize=8, color='red' if row['flags'] else 'black')
         fig.suptitle(f'All image series, frame 0 — shared display contrast 0–{vmax:.0f}', fontsize=11)
         fig.tight_layout(rect=[0, 0, 1, 0.95])
         plt.show()
+    flagged_df = qc_df.loc[qc_df['flags'].ne('')]
+    missing_positions = flagged_df.loc[flagged_df.position.isna()]
+    if not missing_positions.empty:
+        warnings.warn('Flagged images without a Position number cannot be added to '
+                      'excluded_positions: ' + '; '.join(missing_positions.image_name),
+                      UserWarning, stacklevel=2)
+    excluded_positions = {
+        condition: sorted({int(position) for position in
+                           flagged_df.loc[flagged_df.condition == condition, 'position'].dropna()})
+        for condition in conditions
+    }
+    position_sources = qc_df.dropna(subset=['position']).drop_duplicates(['condition', 'position', 'lif_file'])
+    if position_sources.duplicated(['condition', 'position']).any():
+        print('\nPosition labels repeat across LIF files. Each listed Position applies to all '
+              'matching images in its condition; inspect lif_file and scene_index for the source image.')
+    print('\nSuggested exclusions from QC flags (Position numbers; review before applying):')
+    print('excluded_positions = {')
+    for condition, positions in excluded_positions.items():
+        print(f'    {condition!r}: {positions},')
+    print('}')
     return qc_df
 
 
-def load_pre_treatment_intensities(gui_files, inhibitor_frame_index,
-                                  condition_labels=None, channel_index=0,
-                                  min_snr=None, drop_nonpositive=False,
-                                  strict=False, verbose=True):
-    """Load raw spot intensities before treatment for the included GUI images.
+def load_intensities(gui_files, frame_range=None,
+                     condition_labels=None, channel_index=0,
+                     min_snr=None, drop_nonpositive=False,
+                     strict=False, verbose=True):
+    """Load raw spot-intensity distributions over a selected frame window.
 
     Args:
         gui_files: Mapping from condition to (CSV path, acquired frame count)
             pairs, as built by inhibitors_final.ipynb after manual exclusions.
             CSVs must be in the usual results_*/tracking_*.csv layout.
-        inhibitor_frame_index: First treatment frame (excluded from the data).
+        frame_range: Optional (first_frame, last_frame), with both endpoints
+            included and zero-based nonnegative integer indices. For example,
+            (0, 3) selects frames 0–3 and (10, 20) selects frames 10–20.
+            None uses all available observations. Frames without detections
+            contribute no observations; no zero-valued measurements are added.
         condition_labels: Optional mapping from condition to display label.
         channel_index: Channel used for spot_int_ch_ intensity measurements.
         min_snr: Optional minimum SNR; None keeps all finite measurements.
@@ -275,15 +340,20 @@ def load_pre_treatment_intensities(gui_files, inhibitor_frame_index,
         For GUI detections, use all_timepoints (mode 2); particle identifiers
         do not necessarily represent linked trajectories.
     """
+    if frame_range is not None:
+        try:
+            first_frame, last_frame = frame_range
+        except (TypeError, ValueError):
+            raise ValueError('frame_range must be (first_frame, last_frame), inclusive, or None') from None
+        if (any(isinstance(frame, (bool, np.bool_))
+                or not isinstance(frame, (int, np.integer)) or frame < 0
+                for frame in (first_frame, last_frame)) or first_frame > last_frame):
+            raise ValueError('frame_range must contain nonnegative integer indices with first_frame <= last_frame')
+        frame_range = (int(first_frame), int(last_frame))
+
     # Legacy notebooks import inhibitors before adding the repository root
     # to sys.path; load the shared utilities only when this helper is called.
     from utilities.intensity_distributions import load_condition_intensities
-
-    if (isinstance(inhibitor_frame_index, (bool, np.bool_))
-            or not isinstance(inhibitor_frame_index, (int, np.integer))
-            or inhibitor_frame_index < 1):
-        raise ValueError('inhibitor_frame_index must be a positive integer')
-    frame_range = (0, inhibitor_frame_index - 1)
     results = []
     for condition, files in gui_files.items():
         files_by_root = {}
@@ -329,7 +399,7 @@ def load_pre_treatment_intensities(gui_files, inhibitor_frame_index,
                        for item in loaded['skipped_folders']}
             for name, path in included.items():
                 if name not in loaded_names:
-                    reason = reasons.get(name, 'No finite pre-treatment intensities')
+                    reason = reasons.get(name, 'No finite intensities in the selected frame window')
                     if strict:
                         raise ValueError(f'{path}: {reason}')
                     skipped_folders.append({'folder': path.parent.name, 'reason': reason})
@@ -338,9 +408,9 @@ def load_pre_treatment_intensities(gui_files, inhibitor_frame_index,
                 print(f"  SKIP {item['folder']}: {item['reason']}")
         if not per_cell:
             if strict:
-                raise ValueError(f'No pre-treatment data for {condition}')
+                raise ValueError(f'No intensity data in the selected frame window for {condition}')
             if verbose:
-                print(f'  SKIP {condition}: no included images with pre-treatment data')
+                print(f'  SKIP {condition}: no included images with intensity data in the selected frame window')
             continue
         result = dict(
             condition=condition, name=(condition_labels or {}).get(condition, condition),
@@ -355,9 +425,10 @@ def load_pre_treatment_intensities(gui_files, inhibitor_frame_index,
         results.append(result)
         if verbose:
             print(f"  {result['name']}: {result['n_cells']} images, "
-                  f"{result['n_observations_total']} observations, frames {frame_range}")
+                  f"{result['n_observations_total']} observations, "
+                  f"frames {frame_range if frame_range is not None else 'all'}")
     if not results:
-        raise ValueError('No included images contain finite pre-treatment intensities')
+        raise ValueError('No included images contain finite intensities in the selected frame window')
     return results
 
 
@@ -416,6 +487,321 @@ def plot_pre_treatment_whisker(pre_results, save_dir=None,
         [result['name'] for result in pre_results],
         save_dir=save_dir, plot_name=plot_name, **options,
     )
+
+
+def analyze_pre_post_intensity(summary, metrics=('Raw intensity', 'Count-corrected intensity'),
+                               condition_order=None, pre_label='Pre-treatment',
+                               post_label='Post-treatment', alpha=0.05,
+                               n_resamples=9999, random_state=0, deduplicate_responses=False):
+    """Test paired image changes and between-condition post/pre responses.
+
+    ``summary`` contains Condition, Image, Period, and one column per metric.
+    Pairing uses (Condition, Image), never row order. Each image contributes
+    one pre/post window average. Duplicate image/period rows raise an error.
+
+    Within conditions: two-sided Wilcoxon signed-rank tests on Post - Pre
+    (differences rounded to 12 decimals to avoid spurious ranks from roundoff).
+    This tests symmetry of paired differences about zero, assuming images
+    are independent; it is not a test on individual frames or spots.
+
+    Between conditions: two-sided Mann-Whitney U tests on each image's
+    Post / Pre ratio. Pre must be positive for this response; zero Post is
+    retained. Missing pairs and undefined ratios are reported in exclusions.
+    The rank test compares response distributions, not only their medians.
+
+    Permutation p-values handle ties and zeros, enumerate all permutations
+    when feasible, and otherwise use n_resamples draws with a fixed seed.
+    All-zero paired differences receive p=1. At least two images are required.
+    Holm correction is applied to two separate families: all requested
+    within-condition tests, and all requested between-condition tests, each
+    including all metrics by default. With deduplicate_responses=True, metrics
+    with the same valid image identifiers and equal post/pre ratios (within
+    1e-12 numerical tolerance) share one between-condition test family. Their
+    within-condition tests remain separate. The canonical metric for plotting
+    is recorded in parameters['between_metric_map']. This is useful for raw
+    and normalized spot counts, whose post/pre ratios cancel the normalization.
+    Untestable planned comparisons count as p=1 in correction but retain NaN
+    in the result tables. Numeric spot-count and other image summaries are
+    supported as well as intensities.
+
+    Returns responses, within, between, exclusions DataFrames and parameters.
+    These are image-level analyses; experiment clustering/batch effects are
+    not modeled. Aggregate independent biological replicates before calling
+    this helper when images are subsamples of the same experimental unit.
+    """
+    from itertools import combinations
+    from scipy.stats import PermutationMethod, mannwhitneyu, wilcoxon
+    from statsmodels.stats.multitest import multipletests
+
+    metrics = list(metrics)
+    required = ['Condition', 'Image', 'Period', *metrics]
+    if not metrics or len(metrics) != len(set(metrics)):
+        raise ValueError('metrics must be a nonempty sequence of unique column names')
+    if not set(required).issubset(summary.columns):
+        raise ValueError(f'Missing summary columns: {sorted(set(required) - set(summary.columns))}')
+    if pre_label == post_label or not 0 < alpha < 1:
+        raise ValueError('Use distinct pre/post labels and 0 < alpha < 1')
+    if isinstance(n_resamples, (bool, np.bool_)) or not isinstance(n_resamples, (int, np.integer)) or n_resamples < 1:
+        raise ValueError('n_resamples must be a positive integer')
+    data = summary.loc[summary.Period.isin([pre_label, post_label]), required].copy()
+    if data[['Condition', 'Image', 'Period']].isna().any().any():
+        raise ValueError('Condition, Image, and Period identifiers must not be missing')
+    if data.duplicated(['Condition', 'Image', 'Period']).any():
+        raise ValueError('Each (Condition, Image, Period) must have exactly one summary row')
+    order = list(dict.fromkeys(condition_order if condition_order is not None else data.Condition.unique()))
+    response_rows, within_rows, exclusions = [], [], []
+
+    def permutation_method():
+        return PermutationMethod(n_resamples=int(n_resamples), batch=1000, random_state=random_state)
+
+    for metric in metrics:
+        for condition in order:
+            group = data.loc[data.Condition == condition, ['Image', 'Period', metric]]
+            paired = group.pivot(index='Image', columns='Period', values=metric).reindex(columns=[pre_label, post_label])
+            paired = paired.apply(pd.to_numeric, errors='coerce')
+            finite = np.isfinite(paired.to_numpy(dtype=float)).all(axis=1)
+            for image in paired.index[~finite]:
+                exclusions.append(dict(Metric=metric, Condition=condition, Image=image,
+                                       Reason='Missing/nonfinite pre or post value; paired test omitted'))
+            paired = paired.loc[finite]
+            pre = paired[pre_label].to_numpy(dtype=float)
+            post = paired[post_label].to_numpy(dtype=float)
+            difference = np.round(post - pre, decimals=12)
+            for image, before, after in zip(paired.index, pre, post):
+                with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
+                    fold = float(np.divide(after, before)) if before > 0 else np.nan
+                if not np.isfinite(fold):
+                    fold = np.nan
+                    exclusions.append(dict(Metric=metric, Condition=condition, Image=image,
+                                           Reason='Nonpositive pre or undefined post/pre ratio; response test omitted'))
+                response_rows.append(dict(Metric=metric, Condition=condition, Image=image,
+                                          Pre=before, Post=after, Change=after - before, Fold_change=fold))
+            statistic, p_value, status = np.nan, np.nan, 'Insufficient pairs (need >=2)'
+            if len(paired) >= 2:
+                if np.all(difference == 0):
+                    statistic, p_value, status = 0.0, 1.0, 'All paired differences zero; p=1'
+                else:
+                    result = wilcoxon(difference, alternative='two-sided', zero_method='wilcox',
+                                      method=permutation_method())
+                    statistic, p_value, status = float(result.statistic), float(result.pvalue), 'ok'
+            within_rows.append(dict(Metric=metric, Condition=condition, N_pairs=len(paired),
+                                    Median_pre=np.median(pre) if len(pre) else np.nan,
+                                    Median_post=np.median(post) if len(post) else np.nan,
+                                    Median_change=np.median(post - pre) if len(pre) else np.nan,
+                                    Statistic=statistic, p_value=p_value, Status=status))
+
+    responses = pd.DataFrame(response_rows, columns=[
+        'Metric', 'Condition', 'Image', 'Pre', 'Post', 'Change', 'Fold_change'])
+    between_metric_map, response_signatures = {}, {}
+    for metric in metrics:
+        signature = responses.loc[(responses.Metric == metric) & responses.Fold_change.notna()]
+        signature = signature.set_index(['Condition', 'Image'])['Fold_change']
+        canonical = metric
+        if deduplicate_responses and not signature.empty:
+            for candidate, previous in response_signatures.items():
+                if (len(signature) == len(previous) and signature.index.isin(previous.index).all()
+                        and np.allclose(signature.to_numpy(), previous.reindex(signature.index).to_numpy(),
+                                        rtol=1e-12, atol=1e-12)):
+                    canonical = candidate
+                    break
+        between_metric_map[metric] = canonical
+        if canonical == metric:
+            response_signatures[metric] = signature
+    between_rows = []
+    for metric in response_signatures:
+        for first, second in combinations(order, 2):
+            a = responses.loc[(responses.Metric == metric) & (responses.Condition == first), 'Fold_change'].dropna().to_numpy()
+            b = responses.loc[(responses.Metric == metric) & (responses.Condition == second), 'Fold_change'].dropna().to_numpy()
+            statistic, p_value, status = np.nan, np.nan, 'Insufficient images (need >=2 per condition)'
+            if min(len(a), len(b)) >= 2:
+                result = mannwhitneyu(a, b, alternative='two-sided', method=permutation_method())
+                statistic, p_value, status = float(result.statistic), float(result.pvalue), 'ok'
+            between_rows.append(dict(Metric=metric, Condition_A=first, Condition_B=second,
+                                     N_A=len(a), N_B=len(b),
+                                     Median_fold_A=np.median(a) if len(a) else np.nan,
+                                     Median_fold_B=np.median(b) if len(b) else np.nan,
+                                     Statistic=statistic, p_value=p_value, Status=status))
+
+    def holm_table(rows, columns):
+        table = pd.DataFrame(rows, columns=columns)
+        table['p_adjusted'] = np.nan
+        table['Reject'] = False
+        table['Significance'] = 'n/a'
+        table['Family_size'] = len(table)
+        if len(table):
+            finite = np.isfinite(table.p_value.to_numpy(dtype=float))
+            reject, adjusted, _, _ = multipletests(table.p_value.fillna(1), alpha=alpha, method='holm')
+            table.loc[finite, 'p_adjusted'] = adjusted[finite]
+            table.loc[finite, 'Reject'] = reject[finite]
+            for index in table.index[finite]:
+                p = table.loc[index, 'p_adjusted']
+                table.loc[index, 'Significance'] = ('****' if p < 0.0001 else '***' if p < 0.001
+                                                   else '**' if p < 0.01 else '*' if p < 0.05 else 'ns')
+        return table
+
+    within = holm_table(within_rows, ['Metric', 'Condition', 'N_pairs', 'Median_pre',
+                                    'Median_post', 'Median_change', 'Statistic', 'p_value', 'Status'])
+    between = holm_table(between_rows, ['Metric', 'Condition_A', 'Condition_B', 'N_A', 'N_B',
+                                      'Median_fold_A', 'Median_fold_B', 'Statistic', 'p_value', 'Status'])
+    return dict(responses=responses, within=within, between=between,
+                exclusions=pd.DataFrame(exclusions, columns=['Metric', 'Condition', 'Image', 'Reason']),
+                parameters=dict(metrics=metrics, condition_order=order, alpha=alpha,
+                                n_resamples=int(n_resamples), random_state=random_state,
+                                deduplicate_responses=deduplicate_responses,
+                                between_metric_map=between_metric_map,
+                                correction=('Holm; within across all metrics, between across unique responses'
+                                            if deduplicate_responses else
+                                            'Holm; separate within and between families across all metrics')))
+
+
+def _add_holm_brackets(ax, brackets, stack=False):
+    """Add precomputed adjusted-p labels without recalculating any test."""
+    if not brackets:
+        return
+    bottom, top = ax.get_ylim()
+    span = max(top - bottom, np.finfo(float).eps)
+    last_y = top
+    for index, (left, right, label) in enumerate(brackets):
+        y = top + (0.04 + (index if stack else 0) * 0.11) * span
+        height = 0.025 * span
+        ax.plot([left, left, right, right], [y, y + height, y + height, y],
+                color='black', linewidth=1.2, clip_on=False)
+        ax.text((left + right) / 2, y + height, label, ha='center', va='bottom', fontsize=11)
+        last_y = max(last_y, y + height)
+    ax.set_ylim(bottom, last_y + 0.07 * span)
+
+
+def plot_treatment_responses(analysis, metric, condition_order=None, condition_labels=None,
+                             save_dir=None, plot_name='treatment_responses', only_significant=True):
+    """Plot image post/pre ratios with precomputed Holm-corrected between-condition tests.
+
+    Boxes/dots reuse the project's single-group swarm plotter. Zero responses
+    are retained. Ratios with nonpositive/undefined baselines are omitted by
+    analyze_pre_post_intensity and listed in its exclusions table. Only
+    significant adjusted comparisons are annotated by default; all comparisons
+    and numerical p-values remain available in analysis['between'].
+    Equivalent responses identified by analyze_pre_post_intensity reuse their
+    canonical metric's comparisons, so normalization does not duplicate tests.
+    """
+    from IPython.display import display
+    from IPython.utils.capture import capture_output
+    from utilities.plotting import plot_swarm_plot
+
+    responses = analysis['responses']
+    selected = responses.loc[(responses.Metric == metric) & np.isfinite(responses.Fold_change)]
+    requested = condition_order if condition_order is not None else analysis['parameters']['condition_order']
+    order = [condition for condition in requested if (selected.Condition == condition).any()]
+    if not order:
+        print(f'No valid post/pre responses for {metric}.')
+        return None
+    labels = [(condition_labels or {}).get(condition, condition) for condition in order]
+    values = [selected.loc[selected.Condition == condition, 'Fold_change'].to_numpy() for condition in order]
+    with capture_output():
+        ax = plot_swarm_plot(values, labels, cell_summary='mean',
+                             y_label='Image response (post / pre)',
+                             title=f'{metric}: treatment responses\nBetween conditions: Holm-adjusted significance',
+                             figsize=(8, 5), tick_size=12, swarm_size=4,
+                             show_n=False, show_n_trajectories=False, show_stats=False)
+    ax.set_xticks(np.arange(len(order)), [f'{label}\n(n={len(value)} images)' for label, value in zip(labels, values)])
+    ax.axhline(1, color='0.5', linestyle='--', linewidth=1, zorder=0)
+    if (selected.Fold_change >= 0).all():
+        ax.set_ylim(bottom=0)
+    positions = {condition: index for index, condition in enumerate(order)}
+    comparison_metric = analysis['parameters'].get('between_metric_map', {}).get(metric, metric)
+    comparisons = analysis['between'].loc[analysis['between'].Metric == comparison_metric]
+    brackets = [(positions[row.Condition_A], positions[row.Condition_B], row.Significance)
+                for row in comparisons.itertuples()
+                if row.Condition_A in positions and row.Condition_B in positions
+                and np.isfinite(row.p_adjusted) and (row.Reject or not only_significant)]
+    _add_holm_brackets(ax, brackets, stack=True)
+    ax.figure.tight_layout()
+    if save_dir is not None:
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        for extension in ('png', 'svg'):
+            ax.figure.savefig(save_dir / f'{plot_name}.{extension}', dpi=300, bbox_inches='tight')
+    display(ax.figure)
+    plt.close(ax.figure)
+    return ax
+
+
+def plot_pre_post_whisker(summary, metric, y_label, save_dir, plot_name,
+                          windows, condition_order=None, condition_labels=None,
+                          reference_line=None, group_colors=('#4C72B0', '#DD8452'),
+                          start_at_zero=True, paired_statistics=None):
+    """Plot image pre/post summaries with optional precomputed paired statistics.
+
+    Reuses the grouped box/swarm plotter with its unpaired tests disabled.
+    paired_statistics must be the within table from analyze_pre_post_intensity;
+    annotations use its Holm-adjusted labels without recomputing tests.
+    """
+    from matplotlib.patches import Patch, PathPatch
+    from IPython.display import display
+    from IPython.utils.capture import capture_output
+    from utilities.plotting import plot_swarm_plot_grouped
+
+    requested = condition_order if condition_order is not None else summary.Condition.unique()
+    plotted_conditions = [condition for condition in requested
+                          if summary.loc[summary['Condition'] == condition, metric].notna().any()]
+    if not plotted_conditions:
+        print(f'No valid images for {metric}.')
+        return None
+    labels = [(condition_labels or {}).get(condition, condition) for condition in plotted_conditions]
+    data_sources = [
+        ([summary.loc[(summary['Condition'] == condition)
+                      & (summary['Period'] == period), metric].dropna().to_numpy()
+          for condition in plotted_conditions], period)
+        for period in windows
+    ]
+    frame_labels = [f"{period.split('-')[0]}: frames {first}–{last}"
+                    for period, (first, last) in windows.items()]
+    # Display only the final styled figure, after tinting the helper's white boxes.
+    with capture_output():
+        ax = plot_swarm_plot_grouped(
+            data_sources, labels, y_label=y_label, title='  |  '.join(frame_labels),
+            group_colors=group_colors, cell_summary='mean',
+            figsize=(9, 4.5), tick_size=12,
+            swarm_size=1.5 if reference_line is not None else 4,
+            show_n=False, show_n_trajectories=False, show_stats=False,
+        )
+    for box in (patch for patch in ax.patches if isinstance(patch, PathPatch)):
+        vertices = box.get_path().vertices
+        center = (vertices[:, 0].min() + vertices[:, 0].max()) / 2
+        condition_center = ax.get_xticks()[np.argmin(np.abs(ax.get_xticks() - center))]
+        box.set_facecolor(group_colors[0 if center < condition_center else 1])
+        box.set_alpha(0.3)
+    if reference_line is not None:
+        # Keep identical baseline dots compact and varying image summaries visible.
+        for points in ax.collections:
+            values = points.get_offsets()
+            if len(values) and not np.allclose(values[:, 1], reference_line):
+                points.set_sizes([16])
+        ax.axhline(reference_line, color='0.5', linestyle='--', linewidth=1, zorder=0)
+    ax.set_xticks(np.arange(len(labels)), [
+        f'{label}\n(n={len(data_sources[0][0][index])} images)'
+        for index, label in enumerate(labels)
+    ])
+    if start_at_zero and (summary[metric].dropna() >= 0).all():
+        ax.set_ylim(bottom=0)
+    if paired_statistics is not None:
+        positions = {condition: index for index, condition in enumerate(plotted_conditions)}
+        comparisons = paired_statistics.loc[paired_statistics.Metric == metric]
+        brackets = [(positions[row.Condition] - 0.15, positions[row.Condition] + 0.15, row.Significance)
+                    for row in comparisons.itertuples() if row.Condition in positions]
+        _add_holm_brackets(ax, brackets)
+        ax.set_title(ax.get_title() + '\nPaired pre/post: Holm-adjusted significance', fontsize=14)
+    ax.legend(handles=[
+        Patch(facecolor=color, edgecolor='black', alpha=0.3, label=period)
+        for period, color in zip(windows, group_colors)
+    ], loc='upper left', bbox_to_anchor=(1.01, 1), fontsize=10, frameon=True)
+    ax.figure.tight_layout()
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    for extension in ('png', 'svg'):
+        ax.figure.savefig(save_dir / f'{plot_name}.{extension}', dpi=300, bbox_inches='tight')
+    display(ax.figure)
+    plt.close(ax.figure)
+    return ax
 
 
 def calculate_number_of_particles_per_frame(particle_counts_per_frame, inhibitor_frame_index):
@@ -1242,6 +1628,8 @@ def plot_multiple_inhibitors(full_frames_list,
                                 gene_length_effective=None, drug_diffusion_time_min=1.0,
                                 show_error=True,
                                 filename_prefix='HT_',
+                                mean_linewidth=2,
+                                error_alpha=0.1,
                                 **kwargs):
     """Plot multiple inhibitor datasets on the same axes with optional model fits.
 
@@ -1260,6 +1648,8 @@ def plot_multiple_inhibitors(full_frames_list,
         colors: Matplotlib color codes for each dataset.
         legend_labels: Text labels for each dataset's mean trace.
         use_sem: If True, error bands show SEM; else SD.
+        mean_linewidth: Width of each mean trace; default 2.
+        error_alpha: Opacity of the shaded error bands; default 0.1.
         show_individual_trajectories: If True, plot individual cell traces.
         ylims: (ymin, ymax) for the plot.
         xlims: (xmin, xmax) for the plot. If None, auto-scaled.
@@ -1380,13 +1770,13 @@ def plot_multiple_inhibitors(full_frames_list,
 
         # Plot mean ± error band
         ax.plot(frames, mean_traj, 'o-', color=color,
-                linewidth=1, markersize=6,
+                linewidth=mean_linewidth, markersize=6,
                 label=label_text)
         if show_error:
             ax.fill_between(frames,
                             mean_traj - err_traj,
                             mean_traj + err_traj,
-                            color=color, alpha=0.2)
+                            color=color, alpha=error_alpha)
 
         # ── Compute basal value for linear_extrapolated ────────────
         _ds_basal_value = None
@@ -1602,12 +1992,12 @@ def plot_multiple_inhibitors(full_frames_list,
                 fig2, ax2 = plt.subplots(figsize=figsize, facecolor='white')
                 ax2.set_facecolor('white')
                 ax2.plot(frames, _mean_traj, 'o-', color=color,
-                         linewidth=1, label=ds_label, markersize=6)
+                         linewidth=mean_linewidth, label=ds_label, markersize=6)
                 if show_error:
                     ax2.fill_between(frames,
                                      _mean_traj - _err_traj,
                                      _mean_traj + _err_traj,
-                                     color=color, alpha=0.2)
+                                     color=color, alpha=error_alpha)
                 if show_treatment_line:
                     ax2.axvline(x=0, color='black', linestyle='--', linewidth=1,
                                 label=f'{treatment_label} Treatment')
