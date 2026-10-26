@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
 from html import escape
+from fnmatch import fnmatchcase
 import re
 import warnings
 
@@ -110,29 +111,62 @@ def _image_intensity_qc_metrics(values, inhibitor_frame_index):
                 missing_frames=int(np.isnan(values).sum()))
 
 
-def lif_matches_condition(lif_path, condition):
+def lif_matches_condition(lif_path, condition, *, filename_pattern=None):
     """Return True if a LIF filename belongs to a condition.
 
     The filename stem must end with ``_<condition>`` optionally followed by a
     numeric replicate suffix, so ``..._R2_CHX.lif`` and ``..._CHX_1.lif`` both
     match ``'CHX'``, while ``..._SVC_CTRL.lif`` does not match ``'SVC'``.
+    An optional glob pattern replaces this rule and matches the filename stem
+    (without ``.lif``), e.g. ``'*pTB008_pGG125*'``. Both rules are case-sensitive
+    on every platform. Conditions are assigned by filename, not scene name.
     """
+    if filename_pattern is not None:
+        if not isinstance(filename_pattern, str) or not filename_pattern:
+            raise ValueError('filename_pattern must be a nonempty glob pattern for the filename stem')
+        return fnmatchcase(Path(lif_path).stem, filename_pattern)
     return re.search(rf'_{re.escape(condition)}(?:_\d+)?$', Path(lif_path).stem) is not None
 
 
-def find_condition_lifs(lif_dirs, condition):
-    """Return sorted LIF paths in one or more directories matching a condition."""
+def _find_lif_paths(lif_dirs, *, recursive=False):
+    """Validate input directories and discover LIF files independently of labels."""
     if isinstance(lif_dirs, (str, Path)):
         lif_dirs = [lif_dirs]
-    return sorted({path.resolve() for directory in lif_dirs for path in Path(directory).iterdir()
-                   if path.is_file() and path.suffix.lower() == '.lif'
-                   and lif_matches_condition(path, condition)})
+    directories = [Path(directory).expanduser() for directory in lif_dirs]
+    if not directories:
+        raise ValueError('Pass at least one directory containing LIF files')
+    missing = [str(directory) for directory in directories if not directory.is_dir()]
+    if missing:
+        raise FileNotFoundError(
+            'LIF directories do not exist or are not directories: '
+            + ', '.join(repr(directory) for directory in missing)
+            + '. On Windows, use a raw path string such as Path(r"C:\\data\\project") '
+            'or forward slashes.')
+    return sorted({path.resolve() for directory in directories
+                   for path in (directory.rglob('*') if recursive else directory.iterdir())
+                   if path.is_file() and path.suffix.lower() == '.lif'})
+
+
+def find_condition_lifs(lif_dirs, condition, *, recursive=False, filename_pattern=None):
+    """Return sorted LIF paths matching a condition in one or more directories.
+
+    By default, search only the specified directories and require the condition
+    suffix described in :func:`lif_matches_condition`. Set ``recursive=True``
+    to include subfolders, or provide a case-sensitive glob ``filename_pattern``
+    matching the filename stem to use another naming convention. An empty list
+    means no files matched; invalid directories raise with their paths.
+    """
+    if filename_pattern is not None and (not isinstance(filename_pattern, str) or not filename_pattern):
+        raise ValueError('filename_pattern must be a nonempty glob pattern for the filename stem')
+    return [path for path in _find_lif_paths(lif_dirs, recursive=recursive)
+            if lif_matches_condition(path, condition, filename_pattern=filename_pattern)]
 
 
 def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
                        inhibitor_frame_index=4, frame_interval_sec=60,
                        iqr_multiplier=1.5, jump_threshold_pct=20,
-                       influence_threshold_pct=10, show_images=False):
+                       influence_threshold_pct=10, show_images=False, *,
+                       recursive=False, condition_patterns=None):
     """Show each LIF image's compact raw-intensity QC and return every diagnostic row.
 
     Args:
@@ -147,6 +181,12 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
         jump_threshold_pct: Minimum adjacent-frame step relative to pre mean.
         influence_threshold_pct: Minimum leave-one-out mean change to flag.
         show_images: Display all initial images on shared contrast; default False.
+        recursive: Include LIF files in subfolders; default False.
+        condition_patterns: Optional dict mapping conditions to case-sensitive
+            glob patterns for filename stems (without .lif), e.g.
+            {'pTB008_pGG125': '*pTB008_pGG125*'}. Unspecified conditions retain
+            the default suffix rule. Each LIF must match at most one condition.
+            These patterns select whole files, not scenes within a LIF.
 
     Returns:
         DataFrame with every image, its stable zero-based condition-list index,
@@ -165,9 +205,7 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
     """
     if isinstance(lif_dirs, (str, Path)):
         lif_dirs = [lif_dirs]
-    lif_dirs = [Path(directory) for directory in lif_dirs]
-    if not lif_dirs or any(not directory.is_dir() for directory in lif_dirs):
-        raise FileNotFoundError('Pass existing directories containing LIF files')
+    lif_dirs = [Path(directory).expanduser() for directory in lif_dirs]
     if not conditions or len(set(conditions)) != len(conditions):
         raise ValueError('Pass a nonempty list of distinct condition names')
     if not isinstance(channel_index, (int, np.integer)) or channel_index < 0:
@@ -176,8 +214,46 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
         raise ValueError('Use a positive pre-treatment frame count and frame interval')
     if iqr_multiplier < 0 or jump_threshold_pct <= 0 or influence_threshold_pct <= 0:
         raise ValueError('QC thresholds must be positive; iqr_multiplier may be zero')
-    lif_paths = sorted({path.resolve() for directory in lif_dirs for path in directory.iterdir()
-                        if path.is_file() and path.suffix.lower() == '.lif'})
+    if condition_patterns is None:
+        condition_patterns = {}
+    if not isinstance(condition_patterns, dict):
+        raise ValueError('condition_patterns must be a dict mapping conditions to filename-stem glob patterns')
+    unknown = set(condition_patterns) - set(conditions)
+    if unknown:
+        raise ValueError(f'condition_patterns contains unknown conditions: {sorted(unknown)}')
+    if any(not isinstance(pattern, str) or not pattern for pattern in condition_patterns.values()):
+        raise ValueError('Each condition pattern must be a nonempty glob pattern for the filename stem')
+    lif_paths = _find_lif_paths(lif_dirs, recursive=recursive)
+    searched = ', '.join(repr(str(directory.resolve())) for directory in lif_dirs)
+    if not lif_paths:
+        hint = ' Check the selected folders.' if recursive else ' Set recursive=True if the files are in subfolders.'
+        raise FileNotFoundError(f'No .lif files found in {searched} (recursive={recursive}).' + hint)
+    condition_lifs = {
+        condition: [path for path in lif_paths
+                    if lif_matches_condition(path, condition, filename_pattern=condition_patterns.get(condition))]
+        for condition in conditions
+    }
+    unmatched = [condition for condition, paths in condition_lifs.items() if not paths]
+    if len(unmatched) == len(conditions):
+        examples = '\n'.join(f'  {path}' for path in lif_paths[:10])
+        raise FileNotFoundError(
+            f'Found {len(lif_paths)} .lif file(s) in {searched}, but none match conditions {list(conditions)!r}. '
+            'Default matching is case-sensitive and requires a filename ending with _<condition>.lif '
+            'or _<condition>_<number>.lif. Use condition_patterns for a different filename convention. '
+            'Conditions are matched against filenames, not image series names. '
+            'Use recursive=True if the relevant files are in subfolders.\n'
+            f'Discovered LIF files (first 10):\n{examples}')
+    ambiguous = {path: [condition for condition, paths in condition_lifs.items() if path in paths]
+                 for path in lif_paths}
+    ambiguous = {path: labels for path, labels in ambiguous.items() if len(labels) > 1}
+    if ambiguous:
+        details = '\n'.join(f'  {path}: {labels}' for path, labels in ambiguous.items())
+        raise ValueError('Some LIF files match multiple conditions. Use distinct conditions or more specific '
+                         f'condition_patterns to avoid assigning the same images twice:\n{details}')
+    if unmatched:
+        warnings.warn(f'No LIF files matched conditions {unmatched!r}; these conditions will have no QC rows. '
+                      'Check filename suffixes, capitalization, condition_patterns, and recursive.',
+                      UserWarning, stacklevel=2)
     mask_index = {}
     if mask_dir is not None:
         mask_dir = Path(mask_dir)
@@ -189,7 +265,7 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
     rows, previews = [], {}
     for condition in conditions:
         image_index = 0
-        for lif_path in [path for path in lif_paths if lif_matches_condition(path, condition)]:
+        for lif_path in condition_lifs[condition]:
             reader = mi.ReadLif(lif_path, show_metadata=False, format='TZYXC', lazy=True)
             for scene_index, scene_name in enumerate(reader._aics.scenes):
                 reader._aics.set_scene(scene_index)
@@ -237,7 +313,7 @@ def image_intensity_qc(lif_dirs, conditions, mask_dir=None, channel_index=0,
                 image_index += 1
                 del image, projection, pixels, valid
     if not rows:
-        raise FileNotFoundError('No LIF image series match the configured conditions')
+        raise ValueError('Matching LIF files were found, but their readers reported no image series')
     qc_df = pd.DataFrame(rows)
     for _, group_df in qc_df.groupby(['condition', 'region'], sort=False):
         means = group_df['mean'].dropna().to_numpy()
